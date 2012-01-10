@@ -1,0 +1,10 @@
+This is manitou-mdx, the Mail-Database eXchanger Perl script and modules
+for Manitou-Mail. Visit the project's website: http://www.manitou-mail.org
+
+To install, run in this directory:
+
+$ perl Makefile.PL [options]
+$ make
+$ make install
+
+User plugins can be added into lib/Manitou/Plugins

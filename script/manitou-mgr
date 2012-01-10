@@ -1,0 +1,588 @@
+#!/usr/bin/perl
+
+# manitou-mgr
+# Copyright (C) 2004-2011 Daniel Verite
+
+# This file is part of Manitou-Mail (see http://www.manitou-mail.org)
+# v1.2.0
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 as
+# published by the Free Software Foundation.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330,
+# Boston, MA 02111-1307, USA.
+
+#####################################################################
+# manitou-mgr
+# Manitou-Mail manager (toolbox)
+#####################################################################
+
+use strict;
+
+use DBI;
+use DBD::Pg qw(:pg_types);
+use IO::Handle;
+use Getopt::Long;
+use Encode;
+use Digest::SHA1;
+use Data::Dumper;
+
+use Manitou::Words qw(load_stopwords index_words flush_word_vectors clear_word_vectors search);
+use Manitou::Config qw(readconf getconf);
+use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
+use Manitou::Schema;
+
+my $VERSION="1.2.0";
+
+my $dbh;
+my $cnx_string;
+
+my $conf_file;
+my $opt_quiet;
+my %opt_action;
+
+# Needed to execute CREATE DATABASE
+my $opt_dbsuperuser;
+my $default_dbsuperuser="postgres";
+my $opt_dbsuperpassword;
+
+my $opt_dbuser;
+my $default_dbuser="manitou";
+my $opt_dbname;
+my $default_dbname="manitou";
+my $opt_dbpassword;
+
+my ($opt_dbhost, $opt_dbport);
+my $opt_dry_run;
+
+#my $opt_search_terms;
+my $commit_step=100;
+my $vacuum_step=1000;
+my ($min_mail_id, $max_mail_id);
+
+sub usage {
+  my $p="[--conf=/path/to/config_file] [--quiet]";
+  print STDERR qq~Usage:
+  $0 --help
+  $0 --version
+  $0 --create-database [--db-name=db] [--db-user=user] [--db-super-user=superuser] [--db-super-password=passwd] [--db-host=dbhost] [--db-port=dbport] $p
+  $0 --create-schema [--db-name=db] [--db-user=user] [--db-host=dbhost] [--db-port=dbport] [--dry-run] [--quiet] $p
+  $0 --upgrade-schema [--dry-run] [--quiet] $p
+  $0 --hash-attachments $p
+  $0 --merge-attachments $p
+  $0 --print-size $p
+~;
+};
+
+STDOUT->autoflush(1);
+
+my $rc = GetOptions("conf:s" => \$conf_file,
+#		    "search:s" => \$opt_search_terms,
+		    "quiet" => \$opt_quiet,
+		    "help" => \$opt_action{'help'},
+		    "version" => \$opt_action{'version'},
+		    "db-name=s" => \$opt_dbname,
+		    "db-user=s" => \$opt_dbuser,
+		    "db-password=s" => \$opt_dbpassword,
+		    "db-super-user=s" => \$opt_dbsuperuser,
+		    "db-super-password=s" => \$opt_dbsuperpassword,
+		    "db-host=s" => \$opt_dbhost,
+		    "db-port=s" => \$opt_dbport,
+		    "create-database" => \$opt_action{'create-database'},
+		    "create-schema" => \$opt_action{'create-schema'},
+		    "upgrade-schema" => \$opt_action{'upgrade-schema'},
+		    "dry-run" => \$opt_dry_run,
+		    "print-size" => \$opt_action{'print-size'},
+		    "merge-attachments" => \$opt_action{'merge-attachments'},
+		    "hash-attachments" => \$opt_action{'hash-attachments'},
+		   );
+
+if (!$rc) {
+  usage();
+  exit(1);
+}
+
+if ($opt_action{"help"}) {
+  usage();
+  exit(0);
+}
+if ($opt_action{"version"}) {
+  print "$0 (manitou-mail mdx manager) $VERSION\n";
+  exit(0);
+}
+
+if (!defined $conf_file && -r "/etc/manitou-mdx.conf") {
+  $conf_file="/etc/manitou-mdx.conf"; # default config file
+}
+if (defined $conf_file) {
+  my %err;
+  if (!readconf($conf_file, \%err)) {
+    print STDERR "Error in config file: ", $err{msg}, "\n";
+    exit 1;
+  }
+}
+
+if ($opt_action{"hash-attachments"}) {
+  Connect();
+  hash_attachments();
+}
+elsif ($opt_action{"merge-attachments"}) {
+  Connect();
+  merge_attachments();
+}
+elsif ($opt_action{"print-size"}) {
+  Connect();
+  print_size();
+}
+elsif ($opt_action{"create-schema"}) {
+  Connect();
+  create_schema();
+}
+elsif ($opt_action{"upgrade-schema"}) {
+  Connect();
+  upgrade_schema();
+}
+elsif ($opt_action{"create-database"}) {
+  create_database();
+}
+#elsif ($opt_action{"iwi-query"}) {
+#  iwi_query($opt_search_terms);
+#}
+else {
+  usage();
+}
+exit(0);
+
+sub Connect {
+  if (!$opt_action{"create-database"}  &&
+#    (defined ($opt_dbname // $opt_dbuser // $opt_dbpassword //
+#     $opt_dbsuperuser // $opt_dbsuperpassword // $opt_dbhost // $opt_dbport)))
+      (defined($opt_dbname) || defined($opt_dbuser) || defined($opt_dbpassword) ||
+       defined($opt_dbsuperuser) || defined($opt_dbsuperpassword) ||
+       defined($opt_dbhost) || defined($opt_dbport)))
+  {
+    print STDERR "Options --db-* can only be used with the --create-database action.\nFor other actions, the connection parameters are taken from the configuration file (--conf option, defaulting to /etc/manitou-mdx.conf).\n";
+    exit 1;
+  }
+
+  $cnx_string=getconf("db_connect_string");
+  if (!defined $cnx_string) {
+    die "Please define the db_connect_string parameter in the configuration file.";
+  }
+  $dbh = DBI->connect($cnx_string) or die "Can't connect: $DBI::errstr";
+  $dbh->{PrintError}=0;
+  $dbh->{RaiseError}=1;
+  $dbh->{pg_auto_escape}=1;
+  $dbh->{AutoCommit}=1;
+  if ($opt_quiet) {
+    $dbh->do("set client_min_messages to error");
+  }
+  Manitou::Encoding::get_db_encoding($dbh);
+}
+
+sub create_schema_part {
+  foreach (@_) {
+    if ($opt_dry_run) {
+      print "$_;\n";
+    }
+    else {
+      if (!$dbh->do($_)) {
+	$dbh->rollback;
+	die "Statement failed: $_\n" . $dbh->errstr ."\n";
+      }
+    }
+  }
+}
+
+sub create_database {
+  if ($opt_dry_run) {
+    print STDERR "The --dry-run option is not available for database creation.";
+    exit 1;
+  }
+  my $scnx_string = "user=" . (defined $opt_dbsuperuser ? $opt_dbsuperuser : $default_dbsuperuser);
+  $scnx_string .= " password=$opt_dbsuperpassword" if (defined $opt_dbsuperpassword);
+  $scnx_string .= " host=$opt_dbhost" if (defined $opt_dbhost);
+  $scnx_string .= " port=$opt_dbport" if (defined $opt_dbport);
+  my $dbh1=DBI->connect("dbi:Pg:$scnx_string") or die;
+  $dbh1->{AutoCommit}=1;
+  $dbh1->{RaiseError}=0;
+  my $dbname = defined $opt_dbname ? $opt_dbname: $default_dbname;
+  my $dbuser = defined $opt_dbuser ? $opt_dbuser : $default_dbuser;
+  my $s1 = $dbh1->prepare("SELECT 1 FROM pg_user WHERE usename='$dbuser'");
+  $s1->execute();
+  if ($s1->fetchrow_array) {
+    print "The database user $dbuser already exists.\n" unless ($opt_quiet);
+  }
+  else {
+    $dbh1->do("CREATE USER $dbuser") or die $dbh1->errstr;
+    print "Database user $dbuser created.\n" unless ($opt_quiet);
+  }
+  $s1->finish;
+
+  my $s2 = $dbh1->prepare("SELECT 1 FROM pg_database WHERE datname='$dbname'");
+  $s2->execute();
+  if ($s2->fetchrow_array) {
+    print STDERR "The database $dbname already exists.\nPlease check and drop the database before attempting to recreate, or choose another database name.\n";
+    exit 1;
+  }
+  $s2->finish;
+  $dbh1->do("CREATE DATABASE $dbname OWNER $dbuser") or die;
+  print "Database $dbname created.\n" unless ($opt_quiet);
+  $dbh1->disconnect;
+
+  # create language by superuser
+  $dbh1 = DBI->connect("dbi:Pg:$scnx_string dbname=$dbname") or die DBI->errstr;
+  my @lang = $dbh1->selectrow_array("SELECT 1 FROM pg_language WHERE lanname='plpgsql'");
+  if (!@lang) {
+    $dbh1->do("CREATE LANGUAGE plpgsql") or die $dbh->errstr;
+  }
+  $dbh1->disconnect;
+
+  my $cnx_string = "user=$dbuser dbname=$dbname";
+  $cnx_string .= " password=$opt_dbpassword" if (defined $opt_dbpassword);
+  $cnx_string .= " host=$opt_dbhost" if (defined $opt_dbhost);
+  $cnx_string .= " port=$opt_dbport" if (defined $opt_dbport);
+  $dbh=DBI->connect("dbi:Pg:$cnx_string") or die DBI->errstr;
+  create_schema();
+  print "Database $dbname successfully created.\n" unless ($opt_quiet);
+}
+
+sub create_schema {
+  $dbh->begin_work;
+  $dbh->do("SET client_min_messages=warning");
+  my @sequences=Manitou::Schema::create_sequence_statements();
+  print "Creating sequences\n" unless ($opt_quiet);
+  create_schema_part(@sequences);
+
+  my @tables=Manitou::Schema::create_table_statements();
+  print "Creating tables\n" unless ($opt_quiet);
+  create_schema_part(@tables);
+
+  my @functions=Manitou::Schema::create_function_statements();
+  print "Creating functions\n" unless ($opt_quiet);
+  create_schema_part(@functions);
+
+  my @triggers=Manitou::Schema::create_trigger_statements();
+  print "Creating triggers\n" unless ($opt_quiet);
+  create_schema_part(@triggers);
+
+  my @data=Manitou::Schema::create_data_statements();
+  print "Inserting configuration data\n" unless ($opt_quiet);
+  create_schema_part(@data);
+
+  my $version=Manitou::Schema::current_version();
+  my $query="INSERT INTO runtime_info(rt_key,rt_value) VALUES ('schema_version','$version')";
+  if ($opt_dry_run) {
+    print "$query;";
+  }
+  else {
+    $dbh->do($query);
+  }
+
+  $dbh->commit;
+}
+
+sub upgrade_schema {
+  $dbh->begin_work;
+  my $sth=$dbh->prepare("SELECT rt_value,current_database() FROM runtime_info WHERE rt_key='schema_version'");
+  $sth->execute;
+  my ($db_version,$db_name)=$sth->fetchrow_array;
+  if (!defined $db_version) {
+    print STDERR "Error: couldn't identify the database schema version with the runtime_info table\n";
+    exit 1;
+  }
+
+  my @supported = Manitou::Schema::supported_versions();
+  if (! grep( {$_ eq $db_version} @supported)) {
+    print STDERR "Error; version $db_version not supported by manitou-mdx automatic upgrade: the database schema needs to be upgraded manually.\n";
+    exit 1;
+  }
+
+  my $db_current = Manitou::Schema::current_version();
+  if ($db_version eq $db_current) {
+    print "Database $db_name is already at version $db_version\n" unless ($opt_quiet);
+    return 1;
+  }
+  print "Upgrading $db_name from $db_version to $db_current\n" unless ($opt_quiet);
+  my @stmt = Manitou::Schema::upgrade_schema_statements($dbh, $db_version, $db_current);
+  eval {
+    foreach (@stmt) {
+      print "Executing SQL: $_\n" unless ($opt_quiet);
+      if ($opt_dry_run) {
+	print "$_;\n";
+      }
+      else {
+	$dbh->do($_);
+      }
+    }
+  };
+  if ($@) {
+    print STDERR $@;
+    $dbh->rollback;
+    print STDERR "Schema upgrade aborted and rolled back due to failure (see errors above). Upgrade the schema manually (see documentation) or fix the problem and retry.\n";
+    exit 1;
+  }
+  if ($db_version ne $db_current) {
+    my $query="UPDATE runtime_info SET rt_value='$db_current' WHERE rt_key='schema_version'";
+    if ($opt_dry_run) {
+      print "$query;\n";
+    }
+    else {
+      $dbh->do($query);
+    }
+  }
+  $dbh->commit;
+  if (@stmt>0) {
+    print "Schema successfully upgraded to version $db_current\n" unless ($opt_quiet);
+  }
+  else {
+    print "No schema change\n" unless ($opt_quiet);
+  }
+  return 1;
+}
+
+# UNUSED at the moment
+sub reindex_words {
+  # $dbh2 is used for fetching mail_id from a cursor, inside a transaction
+  # that ends only at the end of session (no commit, hence the need for
+  # this second database connection)
+  my $dbh2 = DBI->connect($cnx_string) or die "Can't connect: $DBI::errstr";
+  $dbh2->{AutoCommit}=0;
+
+  load_stopwords($dbh);
+
+  my $where;
+  if ($min_mail_id) {
+    if ($max_mail_id) {
+      $where="WHERE mail_id BETWEEN $min_mail_id AND $max_mail_id";
+    } else {
+      $where="WHERE mail_id>=$min_mail_id";
+    }
+  } elsif ($max_mail_id) {
+    $where="WHERE mail_id<=$max_mail_id";
+  }
+
+  my $sc=$dbh->prepare("SELECT count(*) FROM mail $where");
+  $sc->execute;
+  my ($total)=$sc->fetchrow_array;
+
+  my $commits=0;
+  $dbh2->do("DECLARE c CURSOR FOR SELECT mail_id FROM mail $where ORDER BY mail_id");
+  my $s=$dbh2->prepare("FETCH $commit_step FROM c");
+  $s->execute;
+  my $count=0;
+  while ($s->rows>0) {
+    my $sthb=$dbh->prepare("SELECT bodytext FROM body where mail_id=?");
+    my $sthh=$dbh->prepare("SELECT lines FROM header where mail_id=?");
+
+    my $mail_id;
+    $dbh->begin_work;
+    while (($mail_id)=$s->fetchrow_array) {
+      $count++;
+      $sthb->execute($mail_id);
+      my ($body)=$sthb->fetchrow_array;
+      $sthh->execute($mail_id);
+      my ($header)=$sthh->fetchrow_array;
+      $body = decode_dbtxt($body);
+      $header = decode_dbtxt($header);
+      $body .= Manitou::Words::header_contents_to_ftidx($header);
+      index_words($dbh, $mail_id, \$body, \$header);
+    }
+
+    print "Flushing word vectors..." unless ($opt_quiet);
+    flush_word_vectors($dbh);
+    clear_word_vectors();
+    $dbh->commit;
+    print "done ($count/$total)\n" unless ($opt_quiet);
+    $commits++;
+
+    if ($commits % $vacuum_step==0) {
+      print "Vacuuming..." unless ($opt_quiet);
+      $dbh->do("VACUUM ANALYZE inverted_word_index");
+      print "done\n" unless ($opt_quiet);
+    }
+    $s->execute;
+  }
+
+  $dbh->begin_work;
+  print "Flushing word vectors..." unless ($opt_quiet);
+  flush_word_vectors($dbh);
+  $dbh->commit;
+  print "done\n" unless ($opt_quiet);
+
+  $dbh->do("VACUUM ANALYZE inverted_word_index");
+  $dbh2->do("CLOSE c");
+  $dbh2->commit;
+}
+
+sub hash_attachments {
+  my $su=$dbh->prepare("UPDATE attachment_contents SET fingerprint=? WHERE attachment_id=?");
+  my $sth=$dbh->prepare("SELECT attachment_id, content FROM attachment_contents WHERE fingerprint IS NULL LIMIT 1000");
+  do {
+    $dbh->begin_work;
+    $sth->execute;
+    my $sha1 = Digest::SHA1->new;
+    while (my @r=$sth->fetchrow_array) {
+      $sha1->reset;
+      my $lobj_fd = $dbh->func ($r[1], $dbh->{pg_INV_READ}, 'lo_open');
+      die $dbh->errstr if (!defined($lobj_fd));
+      my $buf;
+      my $nbytes;
+      do {
+	$nbytes = $dbh->func($lobj_fd, $buf, 16384, 'lo_read');
+	$sha1->add($buf);
+	die $dbh->errstr if (!defined($nbytes));
+      } while ($nbytes==16384);
+      $dbh->func ($lobj_fd, 'lo_close');
+      my $b64=$sha1->b64digest;
+      $su->execute($b64, $r[0]);
+      printf("Updating attch_id=%d with hash '%s'\n", $r[0], $b64) unless ($opt_quiet);
+    }
+    $dbh->commit;
+  } while ($sth->rows>0)
+}
+
+sub merge_attachments {
+  my $sth=$dbh->prepare("SELECT fingerprint,MIN(content) FROM attachment_contents WHERE fingerprint IS NOT NULL GROUP BY fingerprint HAVING count(*)>1");
+  my $sth1=$dbh->prepare("SELECT attachment_id, content FROM attachment_contents WHERE fingerprint=? AND content<>?");
+  my $sthu=$dbh->prepare("UPDATE attachment_contents SET content=? WHERE attachment_id=?");
+  $sth->execute;
+  my %removed; # references to removed LOs
+  $dbh->begin_work;
+  while (my ($fingerprint,$keep_oid)=$sth->fetchrow_array) {
+    $sth1->execute($fingerprint, $keep_oid);
+    while (my ($id,$oid)=$sth1->fetchrow_array) {
+      if (!exists $removed{$oid}) {
+	if (!$dbh->func($oid, 'lo_unlink')) {
+	  print "Warning: failed to remove large object $oid (attachment_id=$id)\n";
+	}
+	else {
+	  print "Removed large object $oid\n" unless ($opt_quiet);
+	  $removed{$oid}=1;
+	}
+      }
+      $sthu->execute($keep_oid, $id);
+    }
+  }
+  $dbh->commit;
+}
+
+sub print_size {
+  my @tables=
+    (
+     "addresses",
+     "attachment_contents",
+     "attachments",
+     "body",
+     "header",
+     "inverted_word_index",
+     "mail",
+     "mail_addresses",
+     "mail_tags",
+     "pg_largeobject",
+     "raw_mail",
+     "words");
+
+  print "-"x35, "\n";
+  my $sth1=$dbh->prepare("SELECT pg_total_relation_size(?)");
+  foreach (@tables) {
+    $sth1->execute($_);
+    my ($sz)=$sth1->fetchrow_array;
+    printf("%-20s: %8.2f MB\n", $_, $sz/(1024*1024));
+  }
+
+  print "-"x35, "\n";
+  my $sth=$dbh->prepare("SELECT pg_size_pretty(pg_database_size(current_database()))");
+  $sth->execute;
+  my ($szb)=$sth->fetchrow_array;
+  printf("Total database size : %s\n", $szb);
+}
+
+# sub iwi_query {
+#   my $terms = shift;
+#   die "A non-empty search query must be specified" if (length($terms)==0);
+#   my @results = Manitou::Words::search($dbh, $terms);
+#   print join(",", @results), "\n";
+# }
+
+__END__
+
+=head1 NAME
+
+ manitou-mgr - A management toolbox for Manitou-Mail
+
+=head1 SYNOPSIS
+
+  manitou-mgr --create-database [--db-name=db] [--db-user=user] [--db-super-user=superuser] [--db-super-password=passwd] [--db-host=dbhost] [--db-port=dbport] options
+  manitou-mgr --create-schema [options]
+  manitou-mgr --upgrade-schema [options]
+  manitou-mgr --hash-attachments [options]
+  manitou-mgr --merge-attachments [options]
+  manitou-mgr --print-size [options]
+
+where options are: [--conf=/path/to/config_file] [--quiet]
+
+
+=head1 DESCRIPTION
+
+=over
+
+=item B<create-database>:
+ create a new PostgreSQL database with all the necessary objects to hold the mail data.
+
+=item B<create-schema>:
+ create all database objects to hold the mail data (should be applied to an empty database). Generally this is not needed since --create-database already creates the database objects.
+
+=item B<upgrade-schema>:
+ upgrade database objects to a newer version of manitou-mdx
+
+=item B<print-size>:
+ print the sizes on disk of the main database tables.
+
+=item B<hash-attachments>:
+ compute the fingerprints of the attachments in the database that have no fingerprint. This is done automatically by manitou-mdx during normal import so this option shouldn't be used except for troubleshooting.
+
+=item B<merge-attachments>:
+ merge attachments that share the same fingerprint. This is done automatically by manitou-mdx during normal import so this option shouldn't be used except for troubleshooting.
+
+=back
+
+=head1 Database options
+
+=over
+
+=item B<--db-name>:
+ Database name to create a new database (manitou by default).
+
+=item B<--db-user>:
+ Database user that will own a newly created database (manitou by default).
+
+=item B<--db-host>:
+ Database host name to connect to. By default, connect to a local database (by unix socket)
+
+=item B<--db-port>:
+ Database port number to connect to. By default, 5432.
+
+=item B<--db-super-user>:
+ Database superuser to create a new database (postgres by default)
+
+=item B<--db-super-password>:
+ Password of database superuser, empty by default.
+
+=back
+
+=head1 Database access permissions
+
+=over
+
+=item The default PostgreSQL configuration (pg_hba.conf file) is such that the Unix postgres user can connect locally without a password as the postgres database superuser (authentication method: ident). This user has the necessary permissions to create a new database, a database user, and give ownership of the new database to that user. So under this default configuration, manitou-mgr --create-database should be run as the postgres unix user with no password. Once the manitou database and user are created, the connection information is read from the B<db_connect_string> entry of the configuration file that has to be filled in by the user.
+
+=cut

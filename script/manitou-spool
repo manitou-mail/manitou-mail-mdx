@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+if [ -z "$1" ]; then
+  echo 1>&2 $0: missing argument
+  exit 1
+fi
+
+if [ ! -d "$1" ]; then
+  echo 1>&2 $0: $1: no such directory
+  exit 2
+fi
+
+filenam="$1"/"mail-"`date "+%Y%m%d-%H%M%S"`"-$$"
+umask 0
+cat >$filenam".receiving"
+mv $filenam."receiving" $filenam."received"
+exit 0

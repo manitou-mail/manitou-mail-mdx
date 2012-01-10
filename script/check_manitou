@@ -1,0 +1,90 @@
+#!/usr/bin/perl -w
+
+# Nagios plugin for manitou-mdx
+# check if manitou-mdx is running based on its last_alive timestamp
+
+use DBI;
+use POSIX qw(strftime);
+use strict;
+use Getopt::Long;
+
+my ($opt_c, $opt_d, $opt_h, $opt_V);
+
+sub usage {
+  print "Usage: \n";
+  print " $0 -d database_connection_string [-c critical_delay]\n";
+  print " $0 [-h | --help]\n";
+  print " $0 [-V | --version]\n";
+
+}
+
+# The maximum number of seconds allowed between the
+# 'last_alive' value of the database and the current time.
+$opt_c=60*20;
+
+my $version="1.0";
+
+Getopt::Long::Configure('bundling');
+my $rc=GetOptions(
+        "V"   => \$opt_V, "version"     => \$opt_V,
+        "h"   => \$opt_h, "help"        => \$opt_h,
+	"d=s"   => \$opt_d, "database-cnx=s" => \$opt_d,
+        "c=s" => \$opt_c, "critical-no-alive-since=s" => \$opt_c);
+
+if (!$rc) {
+  usage();
+  exit 2;
+}
+
+if ($opt_V) {
+  print "check_manitou $version\n";
+  exit(0);
+}
+
+if ($opt_h) {
+  print<<EOF;
+check_manitou $version
+
+Check if manitou-mdx is running and ready to process messages.
+
+Connect to the database with the connect string passed in the -d option.
+The connect string is a colon-separated list of connection options expressed as field=value.
+Example: dbname=mail:user=nagios:host=dbserver
+See DBI and DBD::Pg documentation for the full list of available options.
+The test reads the entry named 'last_alive' in the 'runtime_info' table, which is updated frequently (see 'alive_interval' configuration parameter) by manitou-mdx unless it doesn't run or is stuck.
+Use the -c option to adjust the number of seconds beyond which no update of 'last_alive' is considered to be critical. By default it's 1200, for 20 minutes.
+
+EOF
+  exit(0);
+}
+
+my $dbh=DBI->connect("DBI:Pg:$opt_d");
+
+if (!$dbh) {
+  print "MANITOU CRITICAL: cannot connect to the database\n";
+  exit 2;
+}
+
+my $sth=$dbh->prepare("SELECT rt_value FROM runtime_info WHERE rt_key='last_alive'");
+if (!$sth->execute) {
+  print "MANITOU CRITICAL: cannot execute query\n";
+  exit 2;
+}
+my @r=$sth->fetchrow_array;
+# if there's no entry, we consider there's no error
+if (@r) {
+  if (time-$r[0] > $opt_c) {
+    my $d=strftime("%d/%m/%Y %H:%M:%S", localtime($r[0]));
+    print "MANITOU CRITICAL: down since $d\n";
+    exit 2;
+  }
+}
+$sth->finish;
+$dbh->disconnect;
+
+print "MANITOU OK\n";
+exit 0;
+
+# Local variables:
+# mode: CPerl
+# End:
