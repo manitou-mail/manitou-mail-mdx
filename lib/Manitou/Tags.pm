@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2010 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -58,7 +58,7 @@ sub action_tag {
 
 
 sub load_tags {
-  my ($dbh, $ht)=@_;			# name=>id
+  my ($dbh, $ht, $htuc)=@_;			# name=>id
   my %t;
   my $sth=$dbh->prepare("SELECT tag_id,name,parent_id FROM tags");
   $sth->execute;
@@ -75,6 +75,7 @@ sub load_tags {
       $parent_id = @{$t{$parent_id}}[1];
     }
     $ht->{@{$t{$id}}[2]}=$id;   # keep only the full hierarchical name
+    $htuc->{uc(@{$t{$id}}[2])}=$id;   # keep only the full hierarchical name
   }
 }
 
@@ -106,7 +107,7 @@ sub create_tag_hierarchy {
       if ($hierch_name ne "") {
 	$hierch_name .= "->";
       }
-      $hierch_name .= $n;
+      $hierch_name .= uc($n);
       if (defined($t->{$hierch_name})) {
 	$parent_id=$t->{$hierch_name};
       }
@@ -126,10 +127,11 @@ sub create_tag_hierarchy {
 sub insert_tag {
   my ($dbh, $mail_id, $tagname) = @_;
   my %tags;
-  load_tags($dbh, \%tags);
-  my $tag_id=$tags{$tagname};
+  my %uc_tags;
+  load_tags($dbh, \%tags, \%uc_tags);
+  my $tag_id=$uc_tags{uc($tagname)};
   if (!$tag_id) {
-    $tag_id=create_tag_hierarchy($dbh, $tagname, \%tags);
+    $tag_id=create_tag_hierarchy($dbh, $tagname, \%uc_tags);
   }
   if ($tag_id) {
     action_tag($dbh, $mail_id, $tag_id);
