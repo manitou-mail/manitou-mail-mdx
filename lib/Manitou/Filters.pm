@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -132,7 +132,7 @@ sub list_addresses {
   eval {
     @a = Mail::Address->parse(Manitou::Encoding::header_decode($o->head->get($field)));
   };
-  return join ',', @a;
+  return join ',', map { $_->address() } @a;
 }
 
 sub func_mimeobj_size {
@@ -197,7 +197,7 @@ my %eval_funcs =
 
    "cc" =>
    {"func" => sub {
-      return list_addresses($_[0]->{mimeobj}, "cc");
+      return list_addresses($_[0]->{mime_obj}, "cc");
     },
     "args" => 0,
     "return_type" => $TYPE_STRING
@@ -242,7 +242,7 @@ my %eval_funcs =
 
    "from" =>
    {"func" => sub {
-      return list_addresses($_[0]->{mimeobj}, "from");
+      return list_addresses($_[0]->{mime_obj}, "from");
     },
     "args" => 0,
     "return_type" => $TYPE_STRING
@@ -355,7 +355,7 @@ my %eval_funcs =
    },
 
    "to" =>
-   {"func" => sub { list_addresses($_[0]->{mimeobj}, "to"); },
+   {"func" => sub { list_addresses($_[0]->{mime_obj}, "to"); },
     "args" => 0,
     "return_type" => $TYPE_STRING
    }
