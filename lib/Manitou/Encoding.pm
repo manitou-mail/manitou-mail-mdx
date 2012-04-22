@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2010 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -48,20 +48,12 @@ sub get_db_encoding {
 # Convert from perl internal format to a chain of bytes suitable for
 # the current db encoding
 sub encode_dbtxt {
-  if ($db_encoding eq "UTF8") {
-    return Encode::encode("utf8", $_[0], Encode::FB_PERLQQ);
-  }
-  # FIXME: to be completed
-  return $_[0];
+  return Encode::encode("utf8", $_[0], Encode::FB_PERLQQ);
 }
 
 # Decode from the current db to perl internal format
 sub decode_dbtxt {
-  if ($db_encoding eq "UTF8") {
-    return Encode::decode("utf8", $_[0]);
-  }
-  # FIXME: to be completed
-  return $_[0];
+  return Encode::decode("utf8", $_[0]);
 }
 
 sub header_decode {
