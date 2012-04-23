@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2010 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -25,10 +25,15 @@ use Carp;
 require Exporter;
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(load_stopwords index_words flush_word_vectors
-		clear_word_vectors queue_size last_flush_time search);
+		clear_word_vectors queue_size last_flush_time search load_partsize);
 
 use DBD::Pg qw(:pg_types);
+use Time::HiRes qw(gettimeofday tv_interval);
 use Bit::Vector;
+use Manitou::Log qw(error_log notice_log);
+use Manitou::Config qw(getconf);
+use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
+use Unicode::Normalize;
 use integer;
 
 # cache for indexed words
@@ -44,11 +49,25 @@ my %no_index_words;
 # The size of partitions.
 my $partsize;
 
+# When $unaccent is true, we index only the unaccented form of words.
+# This allows for accent-insensitive search.
+my $unaccent;
+
+# When $add_unaccent is true, accented words are indexed both with and
+# without accents. This allows for exact searches of accented words in
+# addition to accent-insensitive search.
+my $add_unaccent;
+
+# Read the configuration only once
+my $accents_configured=0;
+
 # The queue of mails whose word vectors haven't been flushed the db yet
 my @flush_queue;
 
 # Time of last flush
 my $last_flush_time=time;
+
+my $max_mail_id_index_flush=0;
 
 sub queue_size {
   return scalar(@flush_queue);
@@ -70,6 +89,24 @@ sub load_partsize {
     $partsize=16384;		# default value
     $dbh->do("INSERT INTO runtime_info(rt_key,rt_value) VALUES('word_index_partsize','16384')") or croak $dbh->errstr;
   }
+  return $partsize;
+}
+
+sub get_accents_conf {
+  my $mode=getconf("index_words_accent_mode");
+  if ($mode eq "dual" || !defined $mode) {
+    $unaccent=1;
+    $add_unaccent=1;
+  }
+  elsif ($mode eq "strip") {
+    $unaccent=1;
+    $add_unaccent=0;
+  }
+  elsif ($mode eq "keep") {
+    $unaccent=0;
+    $add_unaccent=0;
+  }
+  $accents_configured=1;
 }
 
 sub load_stopwords {
@@ -89,7 +126,9 @@ sub flush_word_vectors {
 
   my $sthi=$dbh->prepare("INSERT INTO inverted_word_index(word_id,part_no,mailvec,nz_offset) VALUES (?,?,?,?)") or croak $dbh->errstr;
 
-  my $bits_written=0;
+  my $vec_cnt_insert=0;
+  my $vec_cnt_update=0;
+  my $t0 = [gettimeofday];
 
   foreach my $wid (keys %vecs) {
     foreach my $part (keys %{$vecs{$wid}}) {
@@ -101,12 +140,17 @@ sub flush_word_vectors {
       if ($min>0) {
 	$nz_offset=$min/8;
 	my $v2 = Bit::Vector->new(0);
-	$v2->Interval_Substitute($v, 0, 0,
-				 $nz_offset*8, ($v->Size()-$nz_offset*8));
+	$v2->Interval_Substitute($v, 0, 0, $nz_offset*8, ($v->Size()-$nz_offset*8));
 	$bits=$v2->Block_Read();
+	# Block_Read rounds to more than 8 bits (32 bits?) so we cut
+	# to 8 bits
+	$bits=substr($bits, 0, ($v2->Size()+7)/8);
       }
       else {
 	$bits=$v->Block_Read();
+	# Block_Read rounds to more than 8 bits (32 bits?) so we cut
+	# to 8 bits
+	$bits=substr($bits, 0, ($v->Size()+7)/8);
       }
       if (defined $vecs{$wid}->{$part}->{insert}) {
 	#insert
@@ -116,6 +160,7 @@ sub flush_word_vectors {
 	$sthi->bind_param(4, $nz_offset);
 	$sthi->execute or croak $dbh->errstr;
 	delete $vecs{$wid}->{$part}->{insert};
+	$vec_cnt_insert++;
       }
       else {
 	# update
@@ -124,17 +169,17 @@ sub flush_word_vectors {
 	$sthu->bind_param(3, $wid);
 	$sthu->bind_param(4, $part);
 	$sthu->execute or croak $dbh->errstr;
+	$vec_cnt_update++;
+      }
+      if (length($bits)+$nz_offset>$partsize/8) {
+	die sprintf("Vector too large (%d bytes) for (word_id,part_no)=(%d,%d)", length($bits)+$nz_offset, $wid, $part);
       }
       delete $vecs{$wid}->{$part}->{dirty};
-      $bits_written += length($bits);
     }
-  }
-  my $sthd=$dbh->prepare("DELETE FROM jobs_queue WHERE mail_id=? AND job_type='widx'");
-  foreach (@flush_queue) {
-    $sthd->execute($_);
   }
   @flush_queue=();
   $last_flush_time=time;
+  notice_log(sprintf("Index vectors flush: %d inserted, %d updated in %0.2fs",$vec_cnt_insert, $vec_cnt_update, tv_interval($t0)));
 }
 
 sub last_flush_time {
@@ -142,18 +187,66 @@ sub last_flush_time {
 }
 
 sub clear_word_vectors {
-#    foreach my $wid (keys %vecs) {
-#      foreach my $part (keys %{$vecs{$wid}}) {
-#        $vecs{$wid}->{$part}->{v}->Resize(0);
-#      }
-#    }
   %vecs=();
   %hwords=();
+}
+
+sub extract_words {
+  my ($ptext, $tb)=@_;
+  my %seen;
+  foreach (split(/[\s+,\.\(\)\\<\>\x{2019}\x{ab}\x{bb}\"'`:;\/!\[\]\?=*\|]/, $$ptext)) {
+    next if (/^[-_#%|*=]+$/);  # skip horizontal separation lines
+    if (/^[-~*_^|_=]+(.*)$/) {
+      $_ = $1;
+    }
+    if (/^([^-~*^|_=]+)[-~*^|_=]+$/) {
+      $_ = $1;
+    }
+    next if (length($_)<=2 || length($_)>50);
+    $_=lc($_);
+    next if (exists $seen{$_});
+    $seen{$_}=1;
+    next if (exists $no_index_words{$_});
+    if (/^[0-9_a-z]+$/) {
+      push @{$tb}, $_;
+    }
+    else {
+      if ($unaccent) {
+	my $w=NFD($_);
+	$w =~ s/\pM//g;  # strip combining characters
+	if ($add_unaccent) {
+	  push @{$tb}, ($_, $w);
+	}
+	else {
+	  push @{$tb}, $w;
+	}
+      }
+      else {
+	push @{$tb}, $_;
+      }
+    }
+  }
+  # extract complete email addresses, plus local part and domain
+  # components, with and without TLD
+  while ($$ptext =~ m/\b([A-Z0-9._%+-]+)\@([A-Z0-9.-]+)\.([A-Z]+)\b/gi) {
+    my $lp=lc($1);
+    my $h=lc($2);
+    my $hh="$h.".lc($3);
+    my $em=lc("$lp\@$hh");
+    foreach ($em,$lp,$h,$hh) {
+      next if (length($_)>50 || length($_)<=2);
+      if (!exists $seen{$_}) {
+	push @{$tb}, $_;
+	$seen{$_}=1;
+      }
+    }
+  }
 }
 
 sub index_words {
   my ($dbh, $mail_id, $pbody, $pheader)=@_;
   load_partsize($dbh) if !defined($partsize);
+  get_accents_conf() if (!$accents_configured);
 
   my $cnt=0;
   my $sth_seq = $dbh->prepare("SELECT nextval('seq_word_id')");
@@ -161,8 +254,10 @@ sub index_words {
   my $sth_n = $dbh->prepare("INSERT INTO words(word_id,wordtext) VALUES (?,?)");
   my $svec = $dbh->prepare("SELECT mailvec,nz_offset FROM inverted_word_index WHERE word_id=? AND part_no=?");
 
-  my @words=split(/\W/, $$pbody);
-  push @words, split(/\W/, $$pheader) if (defined $pheader);
+  my @words;
+  extract_words($pbody, \@words);
+  extract_words($pheader, \@words) if (defined $pheader);
+
 
   # hbody_words contains a unique entry for each word occurring in the
   # body, and is used to avoid inserting multiple (word_id,mail_id) tuples.
@@ -170,16 +265,14 @@ sub index_words {
 
   for my $s (@words) {
     my $word_id;
-    next if (length($s)<=2 || length($s)>50);
-#    next if ($s =~ /^[0-9]+$/);
-    $s = lc($s);
     next if (defined($no_index_words{$s}) or defined($hbody_words{$s}));
     $hbody_words{$s}=1;
 
     # Find the word_id
     if (!defined($hwords{$s})) {
+      my $se=encode_dbtxt($s);
       # The word hasn't been encountered before in any mail
-      $sth_w->execute ($s);
+      $sth_w->execute($se);
       my @r=$sth_w->fetchrow_array;
       if (@r) {
 	$word_id=$r[0];
@@ -188,9 +281,13 @@ sub index_words {
       else {
 	# The word isn't in the words table: let's insert it
 	$sth_seq->execute;
-	my @ts = $sth_seq->fetchrow_array;
-	$sth_n->execute($ts[0],$s);
-	$word_id=$ts[0];
+	($word_id) = $sth_seq->fetchrow_array;
+	eval {
+	  $sth_n->execute($word_id, $se);
+        };
+	if ($@) {
+	  die "$@\nword=$se\n";;
+	}
 	$hwords{$s}=$word_id;
       }
     }
@@ -209,6 +306,9 @@ sub index_words {
 	my @r=$svec->fetchrow_array;
 	my $bits = "\000"x$r[1] . $r[0];
 	$vec = Bit::Vector->new(length($bits)*8);
+	if (length($bits) > $partsize/8)	{ # sanity check
+	  die sprintf("Word vector read from database for (word_id=%d,part_no=%d) exceeds the maximum size (%d bytes,max=%d bytes)", $word_id, $part_no, length($bits), $partsize/8);
+	}
 	$vecs{$word_id}->{$part_no}->{v} = $vec;
 	$vec->Block_Store($bits);
       }
@@ -230,9 +330,9 @@ sub index_words {
   if ($cnt) {
     push @flush_queue, $mail_id;
   }
-#  my $sthi=$dbh->prepare("INSERT INTO word_indexed_mail(mail_id) VALUES (?)") or croak $dbh->errstr;
-#  $sthi->execute($mail_id) or croak $dbh->errstr;
-#  $sthi->finish;
+  if ($mail_id > $max_mail_id_index_flush) {
+    $max_mail_id_index_flush = $mail_id;
+  }
 }
 
 sub fetch_vec {
@@ -341,12 +441,12 @@ sub search {
 # Given a fully decoded mail header, extract the strings that
 # should be full-text indexed along with the contents of
 # the mail
-# Currently, we're extracting only the subject line
 sub header_contents_to_ftidx {
-  if ($_[0] =~ /^Subject: (.*)$/im) {
-    return $1;
+  my $r;
+  while ($_[0] =~ /^(Subject|From|To|Cc): (.*)$/img) {
+    $r.="$2\n";
   }
-  undef;
+  return $r;
 }
 
 
@@ -360,8 +460,11 @@ sub flush_jobs_queue {
     $sthb->execute($mail_id) or die $dbh->errstr;
     my ($body)=$sthb->fetchrow_array;
     $sthh->execute($mail_id) or die $dbh->errstr;
-    my ($headers)=$sthh->fetchrow_array;
-    index_words($dbh, $mail_id, \$body, \$headers);
+    my ($header)=$sthh->fetchrow_array;
+    $body = decode_dbtxt($body);
+    $header = decode_dbtxt($header);
+    $header = Manitou::Words::header_contents_to_ftidx($header);
+    index_words($dbh, $mail_id, \$body, \$header);
   }
   if (queue_size()>0) {
     flush_word_vectors($dbh);
