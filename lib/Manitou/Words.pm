@@ -151,6 +151,38 @@ sub clear_word_vectors {
   %hwords=();
 }
 
+# Clear the bits corresponding to a mail_id in the inverted word
+# index cache in memory.
+# Normally, this is always the last inserted mail, after is has been
+# rolled back
+# It's important to delete the vector if it's empty because the word
+# entry may not exist at all in the database and there's an FK constraint
+# from table inverted_word_index referencing table words.
+sub clear_last_indexed_mail {
+  my ($dbh,$mail_id)=@_;
+  load_partsize($dbh) if !defined($partsize);
+  my $part_no = $mail_id / $partsize;
+  my $bit_id = ($mail_id-1) % $partsize;
+
+  foreach my $wid (keys %vecs) {
+    if (exists $vecs{$wid}->{$part_no}->{dirty}) {
+      my $vec=$vecs{$wid}->{$part_no}->{v};
+      if ($vec->Size()>$bit_id && $vec->bit_test($bit_id)) {
+	$vec->Bit_Off($bit_id);
+	if ($vec->is_empty()) {
+	  delete $vecs{$wid}->{$part_no};
+	}
+	else {
+	  $vecs{$wid}->{$part_no}->{v}=$vec;
+	}
+      }
+    }
+  }
+  # since INSERT INTO words may have been rolled back,
+  # the cache of word_id can no longer be trusted, so it's reset
+  %hwords=();
+}
+
 sub index_words {
   my ($dbh, $mail_id, $pbody, $pheader)=@_;
   load_partsize($dbh) if !defined($partsize);

@@ -738,14 +738,13 @@ sub import_message {
   if ($@) {
     if ($dbh->err > 0) {
       error_log("Database error: $@");
-      $dbh->rollback();
-      return 0;
     }
     else {
       error_log("Import error: $@");
-      $dbh->rollback();
-      return 0;
     }
+    $dbh->rollback();
+    Manitou::Words::clear_last_indexed_mail($dbh, $mail_id) if ($mail_id>0);
+    return 0;
   }
   return $id;
 }
