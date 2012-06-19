@@ -196,8 +196,16 @@ sub parse_sender_date {
   return undef if ($hour>=24 || $min>=60 || $secs>=60);
 
   $year += 2000 if ($year<50);
-  my $t = POSIX::mktime ($secs, $min, $hour, $day,
-                         $month-1, $year-1900);
+  my $t = POSIX::mktime($secs, $min, $hour, $day,
+			$month-1, $year-1900, 0, 0, -1);
+  if (defined $t) {
+    # mktime does not fail on certain invalid dates.
+    # that's why we convert mktime's result back to a date in
+    # localtime and compare that to the day/month/year that
+    # we passed. If they're different, that was an invalid date.
+    my $ymd = strftime("%Y-%m-%d", localtime($t));
+    return undef if ($ymd ne sprintf("%04d-%02d-%02d", $year, $month, $day));
+  }
   return (defined $t) ? ($year,$month,$day,$hour,$min,$secs,$tz) : undef;
 }
 
