@@ -269,7 +269,8 @@ CREATE TABLE jobs_queue (
  job_id serial,
  mail_id int,
  job_type varchar(100),
- job_args text
+ job_args text,
+ status smallint
 );
 CREATE UNIQUE INDEX jobs_pk_idx ON jobs_queue(job_id);
 
@@ -321,11 +322,35 @@ CREATE TABLE mail_template (
   creation_date timestamptz default now()
 )
 EOT
+,"import_mbox" => <<'EOT'
+CREATE TABLE import_mbox (
+  import_id serial PRIMARY KEY,
+  tag_id int,
+  mail_status smallint,
+  apply_filters character,
+  completion real,
+  status smallint,
+  filename text,
+  auto_purge character
+)
+EOT
+,"import_message" => <<'EOT'
+CREATE TABLE import_message (
+  import_id integer,
+  mail_number integer,
+  encoded_mail bytea,
+  status smallint,
+  mail_id int
+)
+EOT
 );
 
 my %object_comments=(
 "mailing_run.status" => "0=not started, 1=running, 2=stopped, 3=finished",
-"mail_addresses.addr_type" => "1=from, 2=to, 3=cc, 4=reply-to, 5=bcc"
+"mail_addresses.addr_type" => "1=from, 2=to, 3=cc, 4=reply-to, 5=bcc",
+"import_message.status" => "0=new, 1=imported, 2=cancelled",
+"import_mbox.status" => "0=not started, 1=running, 2=aborted, 3=finished",
+"import_mbox.auto_purge" => "Delete the row in this table when the import has successfully completed",
 );
 
 my %functions=("insert_mail" => <<'EOFUNCTION'
@@ -680,7 +705,7 @@ sub extract_statements {
 
 sub create_table_statements {
   my @stmt=extract_statements($create_script);
-  for my $t qw(mailing_definition mailing_run mailing_data mail_template) {
+  for my $t qw(mailing_definition mailing_run mailing_data mail_template import_mbox import_message) {
     push @stmt, $tables{$t};
   }
   foreach my $c (keys %object_comments) {

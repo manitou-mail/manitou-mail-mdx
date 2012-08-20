@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -45,6 +45,7 @@ sub db_connect {
 
   Manitou::Encoding::get_db_encoding($dbh);
   $dbh->do("SET client_encoding=UTF8");
+  $dbh->do("LISTEN job_request");
 
   my @init = getconf("init_sql");
   foreach (@init) {

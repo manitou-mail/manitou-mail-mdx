@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
-# manitou-mdx v-1.2.0
-# Copyright (C) 2004-2011 Daniel Verite
+# manitou-mdx v-1.2.1
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -49,6 +49,9 @@ use File::stat;
 use IO::Handle;
 use IPC::Open3;
 use Getopt::Long;
+use File::Temp qw(tempfile);
+use Time::HiRes qw(gettimeofday tv_interval);
+
 
 use Manitou::Filters;
 use Manitou::Jobs;
@@ -64,6 +67,7 @@ use Manitou::Config qw(getconf getconf_bool add_mbox readconf
 		       set_common_conf mailboxes);
 use Manitou::Database qw(db_connect);
 use Manitou::Log qw(notice_log error_log init_log debug_log warning_log);
+use Data::Dumper;
 
 my $DEBUG=$ENV{'MANITOU_MDX_DEBUG'};
 
@@ -159,6 +163,8 @@ sub import_mailfiles {
       db_reconnect();
     }
     if ($st && rename($fname, $proc_filename)) {
+      my $t0 = [gettimeofday];
+
       $import_count++;
       my $str_file_date=strftime("%Y-%m-%d %H:%M:%S",
 				 localtime ($st->mtime));
@@ -211,7 +217,8 @@ sub import_mailfiles {
 	  for my $plugin (@{$postprocess_plugins{$mbox}}) {
 	    $plugin->process(\%plugins_ctxt);
 	  }
-	  LogSuccess("Imported: $fname");
+	  my $msg=sprintf("Imported: %s in %0.2fs", $fname, tv_interval($t0));
+	  LogSuccess($msg);
 	  update_runtime_timestamp("last_import");
 	} elsif ($ret==0) {
 	  LogError("Import failed: $fname");
@@ -387,6 +394,12 @@ sub main_multi {
 	  import_message($global_mbox, \*MAIL_FILE, \%ctxt);
 	  close(MAIL_FILE);
 	  unlink($filename);
+	  if (Manitou::Words::queue_size() > 0) {
+	    if (time-Manitou::Words::last_flush_time() >=
+		getconf("flush_word_index_interval")) {
+	      do_flush_word_vectors;
+	    }
+	  }
 	}
 	if (!$end) {
 	  if (++$mail_cnt > $mbox_skip) {
@@ -467,8 +480,9 @@ sub main_multi {
       if ($still_to_go>0 || time >= $last_checked_incoming+$in_interv) {
 	# import
 	$last_checked_incoming=time;
+	$still_to_go=0;
 	for my $mbox (keys %mailfiles_dirs) {
-	  $still_to_go = import_mailfiles($mbox, $mailfiles_dirs{$mbox});
+	  $still_to_go += import_mailfiles($mbox, $mailfiles_dirs{$mbox});
 	}
       }
       if (!$no_send) {
@@ -503,9 +517,10 @@ sub main_multi {
       $nx_act = min($nx_act, $last_alive+$alive_interv) if ($alive_interv);
       $nx_act = min($nx_act, $maint_when) if ($maint_when);
 
-      if (Manitou::Words::queue_size() >0) {
+      my $widx_size=Manitou::Words::queue_size();
+      if ($widx_size >0) {
 	my $when_widx = Manitou::Words::last_flush_time() + getconf("flush_word_index_interval");
-	if ($when_widx <= $t) {
+	if ($when_widx <= $t || $widx_size >= getconf("flush_word_index_max_queued")) {
 	  do_flush_word_vectors;
 	}
 	else {
@@ -514,8 +529,20 @@ sub main_multi {
       }
       Manitou::Jobs::check_end_jobs($dbh);
       Manitou::Jobs::process_jobs_queue($dbh);
+      check_new_jobs();
+
       # sleep unless there's something better to do right now
-      sleep($nx_act-$t) unless ($nx_act<=$t || $still_to_go>0);
+      if (!($nx_act<=$t || $still_to_go>0)) {
+	my $bits;
+	vec($bits, $dbh->{pg_socket}, 1)=1;
+	my $found = select($bits, undef, undef, $nx_act-$t);
+	if ($found) {
+	  while (my $notif = $dbh->pg_notifies) {
+	    my ($notif_name, $pid, $payload) = @$notif;
+	    process_notification($notif_name, $payload);
+	  }
+	}
+      }
     }
   }
 
@@ -525,6 +552,142 @@ sub main_multi {
   $dbh->disconnect;
 }
 
+sub check_new_jobs {
+  my $sthj = $dbh->prepare("SELECT job_id,job_type,job_args,status FROM jobs_queue WHERE coalesce(status,0)=0");
+  $sthj->execute;
+  my $job=$sthj->fetchrow_hashref;
+  if ($job) {
+    if ($job->{job_type} eq 'import_mailbox') {
+      $dbh->do("UPDATE jobs_queue SET status=1 WHERE job_id=?", {}, $job->{job_id});
+      if (job_import_mailbox($job)) {
+	$dbh->do("DELETE FROM jobs_queue WHERE job_id=?",{}, $job->{job_id});
+      }
+    }
+  }
+}
+
+sub process_notification {
+  my ($name, $payload)=@_;
+  print "notification: $name, payload: $payload\n";
+  check_new_jobs();
+}
+
+sub job_import_mailbox {
+  # Input: h{job_id,job_type,job_args}
+  my $row=shift;
+  if ($row->{job_args} =~ /^\d+$/) {
+    notice_log("Starting mailbox import job #$row->{job_id}");
+    if (import_database_mailbox($row->{job_args})) {
+      notice_log("Mailbox import job #$row->{job_id} (import_id=$row->{job_args}) complete");
+    }
+    else {
+      error_log("Mailbox import job #$row->{job_id} (import_id=$row->{job_args}) did not complete successfully");
+    }
+  }
+}
+
+sub import_database_mailbox {
+  my $import_id=shift;
+  my $result=1;
+  my $end=0;
+  my $previous_completion;
+
+  my $s1=$dbh->prepare("SELECT tag_id,mail_status,apply_filters,auto_purge FROM import_mbox WHERE import_id=?");
+  $s1->execute($import_id);
+  my $import = $s1->fetchrow_hashref;
+  $s1->finish;
+
+  my $s2=$dbh->prepare("SELECT count(*),sum(case when status=1 then 1 else 0 end) FROM import_message WHERE import_id=?");
+  $s2->execute($import_id);
+  my ($cnt_total, $cnt_done)=$s2->fetchrow_array;
+  $s2->finish;
+
+  # We retrieve only one message per query from import_message. This was meant to start
+  # the import while the next messages were still being uploaded. Actually ATM this is not
+  # the case, the UI won't start the import until the entire mbox has been uploaded
+  # and we need them (at least the count) to send a proper progress report anyway.
+  my $sth=$dbh->prepare("SELECT mail_number, encoded_mail FROM import_message WHERE import_id=? AND coalesce(status,0)=0 ORDER BY mail_number LIMIT 1");
+
+  my $sth2=$dbh->prepare("SELECT status FROM import_mbox where import_id=?");
+  my $su = $dbh->prepare("UPDATE import_message SET status=?,mail_id=? WHERE mail_number=? AND import_id=?");
+
+  $dbh->do("UPDATE import_mbox SET status=1 WHERE import_id=?", {} , $import_id);
+
+  while (!$end && $result) {
+    $sth2->execute($import_id);
+    my ($import_status) = $sth2->fetchrow_array;
+    if ($sth2->rows==0 || $import_status==2) {
+      # The import has been aborted
+      $end=1;
+      $result=0;
+      last;
+    }
+
+    $sth->execute($import_id);
+    my @r=$sth->fetchrow_array;
+    if (!@r) {
+      $end=1;
+      last;
+    }
+
+    my ($fh,$filename) = tempfile();
+    if (!defined $fh) {
+      error_log("Unable to create temp file: $!");
+      $result=0;
+      last;
+    }
+    print $fh $r[1];
+    close($fh);
+
+    my $st=stat($filename);
+    if (!open($fh,"$filename")) {
+      error_log("Unable to open $filename: $!");
+      $result=0;
+      last;
+    }
+
+    my %ctxt;
+    $ctxt{'filename'}=$filename;
+    $ctxt{'str_date'}=undef;
+    $ctxt{'proc_filename'}=$filename;
+    $ctxt{'filesize'}=$st->size;
+    $ctxt{'skip_filters'}=1 if ($import->{apply_filters} eq "N");
+    $ctxt{tag_id}=$import->{tag_id} if ($import->{tag_id}>0);
+    $ctxt{status}=$import->{mail_status} if ($import->{mail_status});
+    my $mail_id=import_message(undef, $fh, \%ctxt); # mbox is undef
+    if ($mail_id>0) {
+      $su->execute(1, $mail_id, $r[0], $import_id);
+      if ($cnt_total>0) {
+	my $c=sprintf("%0.2f", (++$cnt_done)/$cnt_total);
+	if ($c ne $previous_completion) {
+	  $previous_completion=$c;
+	  $dbh->do("UPDATE import_mbox SET completion=? WHERE import_id=?", {}, $c, $import_id);
+	  $dbh->do("NOTIFY mbox_import_progress");  # TODO: payload
+	}
+      }
+    }
+    else {
+      $su->execute(2, $r[0], $import_id);
+    }
+    close($fh);
+    unlink($filename);
+    $sth->finish;
+  }
+
+  if ($result==1) {
+    $dbh->begin_work;
+    $dbh->do("DELETE FROM import_message WHERE import_id=?", {}, $import_id);
+    if ($import->{auto_purge} eq "Y") {
+      $dbh->do("DELETE FROM import_mbox WHERE import_id=?", {}, $import_id);
+    }
+    else {
+      $dbh->do("UPDATE import_mbox SET status=3 WHERE import_id=? AND status=1", {} , $import_id);
+    }
+    $dbh->do("NOTIFY mbox_import_progress");
+    $dbh->commit;
+  }
+  return $result;
+}
 
 # Returns the timestamp at which the maintenance plugin $p should be run
 # after the timestamp $now. The result must be >$now
@@ -775,7 +938,7 @@ sub import_message_2 {
   # Header handling
   # Discard the mail if it can't be parsed
   if ( !$top ) {
-      LogError("Malformed mail");
+      LogError("Malformed mail message");
       return 0;
   }
 #  $top->head->unfold;
@@ -820,7 +983,8 @@ sub import_message_2 {
   $mail_ctxt->{thread_id} = $thread_id;
   $mail_ctxt->{mailbox_address} = $mbox_name;
 
-  my $action = apply_filters($mail_ctxt, $top, \$body_text, 'I');
+  my $action;
+  $action = apply_filters($mail_ctxt, $top, \$body_text, 'I') unless ($mail_ctxt->{skip_filters});
 
   if ($action ne "discard") {
 
@@ -896,15 +1060,41 @@ sub import_message_2 {
     insert_header($mail_id, \$safe_header);
 
     if (getconf('index_words', $mbox_name) eq "yes") {
-      index_words($dbh, $mail_id, \$body_text, \$safe_header);
+      my $idx_header = Manitou::Words::header_contents_to_ftidx($safe_header);
+      my $ref_body=\$body_text;
+      my $truncated_body;
+
+      if ($top->head->get("From") =~ /^MAILER-DAEMON@/) {
+	# Some SMTP servers (e.g. qmail) may send bounces that regurgitate the
+	# entire original message in one big destructured piece,
+	# possibly with encoded attachments that can't be recognized
+	# as such for lack of a proper MIME structure.
+	# As a workaround to avoid the vast pollution of the word index
+	# that it may incur, we limit the indexing at 500 lines of text.
+	my $nbl=500;
+	my $pos=0;
+	while (($nbl--)>0 && $pos>=0) {
+	  $pos=index($body_text, "\n", $pos);
+	  $pos++ unless ($pos==-1);
+	}
+	if ($nbl<0 && $pos>0) {
+	  $truncated_body=substr($body_text, 0, $pos);
+	  $ref_body=\$truncated_body;
+	}
+      }
+      index_words($dbh, $mail_id, $ref_body, \$idx_header);
       my $sthj=$dbh->prepare("INSERT INTO jobs_queue(mail_id,job_type) VALUES(?,?)") or die $dbh->errstr;
       $sthj->execute($mail_id, "widx");
     }
 
-    if ($mail_id>0 && defined($mail_ctxt->{'tags'})) {
+    if ($mail_id>0 && defined $mail_ctxt->{'tags'}) {
       for my $t (@{$mail_ctxt->{'tags'}}) {
 	Manitou::Tags::insert_tag($dbh, $mail_id, $t);
       }
+    }
+
+    if ($mail_id>0 && defined $mail_ctxt->{tag_id}) {
+      Manitou::Tags::action_tag($dbh, $mail_id, $mail_ctxt->{tag_id});
     }
   }
   else {
@@ -999,19 +1189,21 @@ sub insert_addresses {
   for my $adrtype (keys %hAdrTypes) {
     my @addrs;
     eval {
+      no warnings 'all';
       @addrs=Mail::Address->parse(header_decode($mail->head->get($adrtype)));
     };
-    warn $@ if $@;
     for my $a (@addrs) {
       my $pos=0;
       if ($a->address) {
-	$sth->execute(lc($a->address)) or die $sth->errstr;
+	my $la=lc($a->address);
+	my $ln=lc($a->name);
+	$sth->execute($la) or die $sth->errstr;
 	my ($id,$addr_pri)=$sth->fetchrow_array;
 	if (!$id) {
 	  $id=get_sequence_nextval("seq_addr_id");
 	  $sth_insert_ad->execute($id,
-				  substr(lc($a->address),0,300),
-				  substr($a->name,0,300))
+				  substr($la,0,300),
+				  substr($ln,0,300))
 	    or die $sth_insert_ad->errstr;
 	}
 	# update addresses.last_recv_from
@@ -1205,7 +1397,7 @@ sub insert_mail {
     $sth_ma_insert->execute($mail_id, $_->{type}, $_->{pos}, $_->{addr_id}) or die $sth_ma_insert->errstr;
   }
 
-  if (($status&1)==0) {
+  if ($status==0) {
     $dbh->do("NOTIFY new_message");
   }
 

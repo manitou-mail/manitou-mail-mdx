@@ -177,6 +177,10 @@ sub flush_word_vectors {
       delete $vecs{$wid}->{$part}->{dirty};
     }
   }
+  my $sthd=$dbh->prepare("DELETE FROM jobs_queue WHERE mail_id=? AND job_type='widx'");
+  foreach (@flush_queue) {
+    $sthd->execute($_);
+  }
   @flush_queue=();
   $last_flush_time=time;
   notice_log(sprintf("Index vectors flush: %d inserted, %d updated in %0.2fs",$vec_cnt_insert, $vec_cnt_update, tv_interval($t0)));

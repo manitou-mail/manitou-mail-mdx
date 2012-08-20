@@ -34,7 +34,7 @@ my %active_pids;
 
 sub process_jobs_queue {
   my $dbh=shift;
-  my $sth=$dbh->prepare("SELECT job_id,job_type,job_args FROM jobs_queue");
+  my $sth=$dbh->prepare("SELECT job_id,job_type,job_args FROM jobs_queue WHERE job_type='mailing'");
   $sth->execute;
   while (my $row=$sth->fetchrow_hashref) {
     next if (defined $active_pids{$row->{job_id}}); # already running
