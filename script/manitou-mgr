@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # manitou-mgr
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 # v1.2.1
@@ -79,6 +79,7 @@ sub usage {
   $0 --hash-attachments $p
   $0 --merge-attachments $p
   $0 --print-size $p
+  $0 --clear-word-index
   $0 --reindex-words [--reindex-words-step=step] [--reindex-words-begin=first_mail_id] [--reindex-words-end=last_mail_id] $p
 ~;
 };
@@ -107,7 +108,8 @@ my $rc = GetOptions("conf:s" => \$conf_file,
 		    "reindex-words" => \$opt_action{'reindex-words'},
 		    "reindex-words-step=s" => \$opt_reindex_step,
 		    "reindex-words-begin=s" => \$opt_reindex_begin,
-		    "reindex-words-end=s" => \$opt_reindex_end
+		    "reindex-words-end=s" => \$opt_reindex_end,
+		    "clear-word-index" => \$opt_action{'clear-word-index'}
 		   );
 
 if (!$rc) {
@@ -165,6 +167,10 @@ elsif ($opt_action{"reindex-words"}) {
   $optr{'begin'}=$opt_reindex_begin if ($opt_reindex_begin>=0);
   $optr{'end'}=$opt_reindex_end if ($opt_reindex_end>=0);
   reindex_words(\%optr);
+}
+elsif ($opt_action{"clear-word-index"}) {
+  Connect();
+  clear_word_index();
 }
 #elsif ($opt_action{"iwi-query"}) {
 #  iwi_query($opt_search_terms);
@@ -358,6 +364,10 @@ sub upgrade_schema {
   return 1;
 }
 
+sub clear_word_index {
+  $dbh->do("TRUNCATE TABLE words,inverted_word_index,tags_words");
+}
+
 sub reindex_words {
   my $opt=shift;
 
@@ -402,7 +412,6 @@ sub reindex_words {
       index_words($dbh, $mail_id, \$body, \$header);
     }
 
-    print "max mail_id=$min_id\n";
     print "Flushing word vectors..." unless ($opt_quiet);
     flush_word_vectors($dbh);
     clear_word_vectors();
@@ -518,6 +527,8 @@ __END__
   manitou-mgr --hash-attachments [options]
   manitou-mgr --merge-attachments [options]
   manitou-mgr --print-size [options]
+  manitou-mgr --reindex-words [options] [--reindex-words-step=step] [--reindex-words-begin=first_mail_id] [--reindex-words-end=last_mail_id]
+  manitou-mgr --clear-word-index [options]
 
 where options are: [--conf=/path/to/config_file] [--quiet]
 
@@ -543,6 +554,12 @@ where options are: [--conf=/path/to/config_file] [--quiet]
 
 =item B<merge-attachments>:
  merge attachments that share the same fingerprint. This is done automatically by manitou-mdx during normal import so this option shouldn't be used except for troubleshooting.
+
+=item B<reindex-words>: [--reindex-words-step=step] [--reindex-words-begin=first_mail_id] [--reindex-words-end=last_mail_id]
+ rebuild the full text index. Optionally starts at I<first_mail_id> and ends at I<last_mail_id>, flushing the index to the database and reclaming memory every I<step> messages. I<step> defaults to the default word index partition size, which is 16384 messages.
+
+=item B<clear-word-index>:
+ clear the full text index by truncating the relevant SQL tables. This is recommended before a B<reindex-words> of the entire database.
 
 =back
 
@@ -574,6 +591,8 @@ where options are: [--conf=/path/to/config_file] [--quiet]
 
 =over
 
-=item The default PostgreSQL configuration (pg_hba.conf file) is such that the Unix postgres user can connect locally without a password as the postgres database superuser (authentication method: ident). This user has the necessary permissions to create a new database, a database user, and give ownership of the new database to that user. So under this default configuration, manitou-mgr --create-database should be run as the postgres unix user with no password. Once the manitou database and user are created, the connection information is read from the B<db_connect_string> entry of the configuration file that has to be filled in by the user.
+=item The default PostgreSQL configuration (pg_hba.conf file) is often such that the Unix postgres user can connect locally without a password as the postgres database superuser (authentication method: ident). This user has the necessary permissions to create a new database, a database user, and give ownership of the new database to that user. So under this default configuration, manitou-mgr --create-database may be run as the postgres unix user with no password. Once the manitou database and user are created, the connection information is read from the B<db_connect_string> entry of the configuration file that has to be filled in by the user.
+
+=back
 
 =cut
