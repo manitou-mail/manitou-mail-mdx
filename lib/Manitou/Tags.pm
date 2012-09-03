@@ -45,15 +45,8 @@ sub get_sequence_nextval {
 
 sub action_tag {
   my ($dbh, $mail_id, $tag_id) = @_;
-  # See if the tag isn't already set
-  my $sth1=$dbh->prepare("SELECT 1 FROM mail_tags WHERE mail_id=? AND tag=?");
-  $sth1->execute($mail_id, $tag_id);
-  my @r=$sth1->fetchrow_array;
-  if (!@r) {
-    # If not, then set it
-    my $sth=$dbh->prepare("INSERT INTO mail_tags(mail_id,tag) VALUES (?,?)");
-    $sth->execute ($mail_id, $tag_id);
-  }
+  my $sth=$dbh->prepare("INSERT INTO mail_tags(mail_id,tag) SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM mail_tags WHERE mail_id=? AND tag=?)");
+  $sth->execute($mail_id, $tag_id, $mail_id, $tag_id);
 }
 
 
