@@ -23,9 +23,14 @@ use vars qw(@ISA @EXPORT_OK);
 
 require Exporter;
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(db_connect);
+@EXPORT_OK = qw(db_connect bytea_output);
 
 use Manitou::Config qw(getconf);
+my $cache_bytea_output;
+
+sub bytea_output {
+  $cache_bytea_output;
+}
 
 sub db_connect {
   my $cnx_string=getconf("db_connect_string");
@@ -51,5 +56,13 @@ sub db_connect {
   foreach (@init) {
     $dbh->do($_);
   }
+
+  my $s=$dbh->prepare("SELECT setting FROM pg_catalog.pg_settings WHERE name='bytea_output'");
+  $s->execute;
+  ($cache_bytea_output) = $s->fetchrow_array;
+  $cache_bytea_output="escape" if (!defined $cache_bytea_output);
+
   return $dbh;
 }
+
+1;

@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -29,11 +29,11 @@ require Exporter;
 		create_table_statements create_trigger_statements);
 
 sub current_version {
-  return "1.2.0";
+  return "1.3.0";
 }
 
 sub supported_versions {
-  return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0");
+  return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0");
 }
 
 my $create_script=<<EOF;
@@ -855,7 +855,11 @@ sub upgrade_schema_statements {
     push @stmt, sql_comment("mail_addresses.addr_type");
     push @stmt, $functions{"replace_header_field"};
   }
-
+  elsif ($from eq "1.2.0" && $to eq "1.3.0") {
+    push @stmt, "ALTER TABLE jobs_queue ADD status SMALLINT";
+    push @stmt, $tables{"import_mbox"};
+    push @stmt, $tables{"import_message"};
+  }
   return @stmt;
 }
 

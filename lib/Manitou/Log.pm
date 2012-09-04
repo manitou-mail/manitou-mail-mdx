@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -47,3 +47,5 @@ sub debug_log {
 sub warning_log {
   syslog("warning", shift);
 }
+
+1;

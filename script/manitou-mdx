@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-# manitou-mdx v-1.2.1
+# manitou-mdx v-1.3.0
 # Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
@@ -218,24 +218,29 @@ sub import_mailfiles {
 	    $plugin->process(\%plugins_ctxt);
 	  }
 	  my $msg=sprintf("Imported: %s in %0.2fs", $fname, tv_interval($t0));
-	  LogSuccess($msg);
+	  notice_log($msg);
 	  update_runtime_timestamp("last_import");
-	} elsif ($ret==0) {
-	  LogError("Import failed: $fname");
+	}
+	elsif ($ret==0) {
+	  error_log("Import failed: $fname");
 	  update_runtime_timestamp("last_error");
 	  update_runtime_errcount();
-	} elsif ($ret==-1) {
-	  LogError("Discarded: $fname");
+	}
+	elsif ($ret==-1) {
+	  error_log("Discarded: $fname");
 	}
 	my $cmd=getconf("postprocess_mailfile_cmd", $mbox);
-	if (defined($cmd)) {
+	if (defined $cmd) {
 	  my $result="imported";
 	  if ($ret==0) { $result="error"; }
 	  elsif ($ret==-1) { $result="discarded"; }
 	  system("/bin/sh", "-c", $cmd, $result, $done, $mbox);
+	  if (($?>>8)!=0) {
+	    warning_log("Execution of postprocess_mailfile_cmd failed (\`$cmd\`, exit code=".($?>>8).")");
+	  }
 	}
       } else {
-	LogError("Rename failed: $proc_filename => $done");
+	error_log("Rename failed: $proc_filename => $done");
       }
     } else {
       # we couldn't stat or rename the .received file. Check if it has disappeared
@@ -424,7 +429,6 @@ sub main_multi {
       my $str_file_date=strftime ("%Y-%m-%d %H:%M:%S",
 				  localtime ($st->mtime));
       open(MAIL_FILE, $ARGV[$nb]) or die $ARGV[$nb].": $!\n";
-      print "Importing $ARGV[$nb]\n";
       my %ctxt;
       $ctxt{'filename'}=$ARGV[$nb];
       $ctxt{'filesize'} = $st->size;
@@ -796,21 +800,11 @@ sub init_temp_dir {
 }
 
 sub LogError {
-  my ($msg) = @_;
-#   my $day = strftime "%d-%m-%Y-%H%M%S", localtime;
-#   print STDERR "$day|";
-#   if ($mail_id>0) {
-#     print STDERR "mail_id=$mail_id|";
-#   }
-#   print STDERR "$msg\n";
-  error_log($msg);
+  error_log(@_);
 }
 
 sub LogSuccess {
-  my ($msg) = @_;
-#  my $date = strftime "%d-%m-%Y-%H%M%S", localtime;
-#  print STDOUT "$date|$msg\n";
-  notice_log($msg);
+  notice_log(@_);
 }
 
 # Remove the non-paired occurrences of symbols from a phrase
@@ -1058,7 +1052,7 @@ sub import_message_2 {
 
     insert_header($mail_id, \$safe_header);
 
-    if (getconf('index_words', $mbox_name) eq "yes") {
+    if (getconf_bool('index_words', $mbox_name)) {
       my $idx_header = Manitou::Words::header_contents_to_ftidx($safe_header);
       my $ref_body=\$body_text;
       my $truncated_body;
@@ -1081,9 +1075,27 @@ sub import_message_2 {
 	  $ref_body=\$truncated_body;
 	}
       }
-      index_words($dbh, $mail_id, $ref_body, \$idx_header);
+
+      my $other_words;
+      if (defined $body_html && getconf_bool('index_words_html_parts', $mbox_name)) {
+	$other_words = Manitou::Words::html_to_text(\$body_html);
+      }
+
+      my %extractors = Manitou::Attachments::text_extractors($mbox_name);
+
+      if (scalar %extractors || getconf_bool('index_words_html_parts', $mbox_name)) {
+	# If there are no extractors defined, we may still extract words
+	# with our internal html-to-plaintext converter
+	Manitou::Attachments::launch_text_extractors($dbh, $mail_id,
+						     \%extractors,
+						     \$other_words);
+      }
+
+      index_words($dbh, $mail_id, $ref_body, \$idx_header, \$other_words);
+
       my $sthj=$dbh->prepare("INSERT INTO jobs_queue(mail_id,job_type) VALUES(?,?)") or die $dbh->errstr;
       $sthj->execute($mail_id, "widx");
+      # end of code block to mutualize
     }
 
     if ($mail_id>0 && defined $mail_ctxt->{'tags'}) {
@@ -1594,6 +1606,7 @@ sub send_one_mail {
   $sthb->finish;
 
   $db_body = decode_dbtxt($db_body);
+  $html_body = decode_dbtxt($html_body);
 
   my ($body,$body_charset) = Manitou::MailFormat::encode_text_body($db_body, @charsets);
 
@@ -1683,8 +1696,27 @@ sub send_one_mail {
     }
   }
 
-  if (getconf('index_words', $from) eq "yes") {
-    index_words($dbh, $mail_id, \$db_body, \$header_lines);
+  if (getconf_bool('index_words', $from)) {
+    my $other_words;
+    # Extract words from the "html body"
+    if (defined $html_body && getconf_bool('index_words_html_parts', $from)) {
+      $other_words = Manitou::Words::html_to_text(\$html_body);
+    }
+
+    # Extract words from other attachments
+    my %extractors = Manitou::Attachments::text_extractors($from);
+
+    if (scalar %extractors || getconf_bool('index_words_html_parts', $from)) {
+      # If there are no extractors defined, we may still extract words
+      # with our internal html-to-plaintext converter
+      Manitou::Attachments::launch_text_extractors($dbh, $mail_id,
+						   \%extractors,
+						   \$other_words);
+    }
+
+    my $headerx = Manitou::Words::header_contents_to_ftidx($header_lines);
+    index_words($dbh, $mail_id, \$db_body, \$headerx, \$other_words);
+
     my $sthj=$dbh->prepare("INSERT INTO jobs_queue(mail_id,job_type) VALUES(?,?)") or die $dbh->errstr;
     $sthj->execute($mail_id, "widx");
   }
@@ -1721,8 +1753,8 @@ sub send_one_mail {
     my $e=<$err>;
     close($err);
     close($out);
-    if ($e ne "") {
-      error_log("Local delivery agent error: (\`$cmd\`): $e");
+    if ($e ne "" || ($?>>8)!=0) {
+      error_log("Local delivery agent error: (\`$cmd\`, exit code=".($?>>8)."): $e");
     }
     else {
       # Set the SENT and ARCHIVED status bits
@@ -1732,6 +1764,7 @@ sub send_one_mail {
       $ret=1; # OK
     }
   }
+  $SIG{'PIPE'}='DEFAULT';
 
   $dbh->commit;
   return $ret;

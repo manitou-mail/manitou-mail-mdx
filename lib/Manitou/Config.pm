@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -41,6 +41,7 @@ my %default_conf =
    'outgoing_check_interval' => 5,
    'index_words' => "yes",
    'index_words_accent_mode' => "dual", # strip, keep
+   'index_words_html_parts' => "yes",
    'local_delivery_agent' => "sendmail -f \$FROM\$ -t",
    'log_filter_hits' => 'yes',
    'preferred_charset' => "iso-8859-1 iso-8859-15 utf-8",
@@ -70,6 +71,8 @@ my %conf_opts =
    'flush_word_index_max_queued' => 'integer',
    'index_words' => 'bool',
    'index_words_accent_mode' => 'string',
+   'index_words_extractors' => 'strings',
+   'index_words_html_parts' => 'bool',
    'init_sql' => 'strings',
    'local_delivery_agent' => 'program',
    'log_filter_hits' => 'bool',

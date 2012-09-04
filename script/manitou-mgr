@@ -4,7 +4,7 @@
 # Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
-# v1.2.1
+# v1.3.0
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -34,13 +34,15 @@ use Getopt::Long;
 use Encode;
 use Digest::SHA1;
 use Data::Dumper;
+use Time::HiRes qw(gettimeofday tv_interval);
 
 use Manitou::Words qw(load_stopwords index_words flush_word_vectors clear_word_vectors search);
-use Manitou::Config qw(readconf getconf);
+use Manitou::Config qw(readconf getconf getconf_bool);
 use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
 use Manitou::Schema;
+use Manitou::Attachments;
 
-my $VERSION="1.2.1";
+my $VERSION="1.3.0";
 
 my $dbh;
 my $cnx_string;
@@ -372,24 +374,38 @@ sub reindex_words {
   my $opt=shift;
 
   load_stopwords($dbh);
-
+  my $col_html = getconf_bool("index_words_html_parts") ? "bodyhtml":"null";
   my $where;
+  my $partsize = Manitou::Words::load_partsize($dbh);
   my $limit =  (defined $opt->{step}) ? "LIMIT $opt->{step}" :
-    "LIMIT " . Manitou::Words::load_partsize($dbh);
+    "LIMIT $partsize";
   my $min_id = $opt->{begin} ? int($opt->{begin}):1;
-  my $sthb = $dbh->prepare("SELECT bodytext FROM body where mail_id=?");
+  my $sthb = $dbh->prepare("SELECT bodytext,$col_html FROM body where mail_id=?");
   my $sthh = $dbh->prepare("SELECT lines FROM header where mail_id=?");
   my $end=0;
+  my %extractors = Manitou::Attachments::text_extractors();
+  my $idx_html = getconf_bool("index_words_html_parts");
+  my $part_no=0;
 
   while (!$end) {
     $dbh->begin_work;
-    my @cond;
-    push @cond, "mail_id>=".$min_id if ($min_id>0);
-    push @cond, "mail_id<=".int($opt->{end}) if ($opt->{end});
-    $where = @cond>0 ? "WHERE ".join(" AND ", @cond) : "";
-    my $s=$dbh->prepare("SELECT mail_id FROM mail $where ORDER BY mail_id $limit");
 
-    $s->execute;
+    my $s;
+    if (!defined $opt->{step} && !defined $opt->{begin} && !defined $opt->{end}) {
+      # By default, we partition the re-indexing in exact word index partitions
+      # to do only inserts (no update).
+      $s=$dbh->prepare("SELECT mail_id FROM mail WHERE mail_id>=? AND mail_id<? ORDER BY mail_id");
+      $s->execute($part_no*$partsize, ($part_no+1)*$partsize);
+    }
+    else {
+      my @cond;
+      push @cond, "mail_id>=".$min_id if ($min_id>0);
+      push @cond, "mail_id<=".int($opt->{end}) if ($opt->{end});
+      $where = @cond>0 ? "WHERE ".join(" AND ", @cond) : "";
+      $s=$dbh->prepare("SELECT mail_id FROM mail $where ORDER BY mail_id $limit");
+      $s->execute;
+    }
+
     my $count=0;
     if ($s->rows==0) {
       $end=1;
@@ -397,26 +413,40 @@ sub reindex_words {
     }
 
     my $mail_id;
+    my $t0 = [gettimeofday];
     while (($mail_id)=$s->fetchrow_array) {
       if ($min_id<$mail_id) {
 	$min_id=$mail_id;
       }
       $count++;
       $sthb->execute($mail_id);
-      my ($body)=$sthb->fetchrow_array;
+      my ($body,$html)=$sthb->fetchrow_array;
       $sthh->execute($mail_id);
       my ($header)=$sthh->fetchrow_array;
       $body = decode_dbtxt($body);
       $header = decode_dbtxt($header);
+      my $other_words;
+      if ($html) {
+	$html = decode_dbtxt($html);
+	$other_words = Manitou::Words::html_to_text(\$html);
+      }
       $header = Manitou::Words::header_contents_to_ftidx($header);
-      index_words($dbh, $mail_id, \$body, \$header);
+      if (scalar(%extractors)!=0 || ($idx_html && length($html)>0)) {
+	Manitou::Attachments::launch_text_extractors($dbh, $mail_id,
+						     \%extractors,
+						     \$other_words);
+      }
+      index_words($dbh, $mail_id, \$body, \$header, \$other_words);
     }
 
     print "Flushing word vectors..." unless ($opt_quiet);
-    flush_word_vectors($dbh);
+    flush_word_vectors($dbh, {'copy_mode'=>1, 'no_jobs_queue'=>1});
     clear_word_vectors();
+    $part_no++;
     $dbh->commit;
-    print "$count messages reindexed (up to mail_id=$min_id)\n" unless ($opt_quiet);
+    my $tspent = int(tv_interval($t0));
+    my $rate = int($tspent>0 ? $count/$tspent : 0);
+    print "$count messages reindexed (up to mail_id=$min_id, $rate messages/s)\n" unless ($opt_quiet);
     $min_id++;
   }
 
@@ -437,10 +467,10 @@ sub hash_attachments {
       my $buf;
       my $nbytes;
       do {
-	$nbytes = $dbh->func($lobj_fd, $buf, 16384, 'lo_read');
+	$nbytes = $dbh->func($lobj_fd, $buf, 16384*4, 'lo_read');
 	$sha1->add($buf);
-	die $dbh->errstr if (!defined($nbytes));
-      } while ($nbytes==16384);
+	die $dbh->errstr if (!defined $nbytes);
+      } while ($nbytes==16384*4);
       $dbh->func ($lobj_fd, 'lo_close');
       my $b64=$sha1->b64digest;
       $su->execute($b64, $r[0]);

@@ -21,6 +21,7 @@ package Manitou::Words;
 use strict;
 use vars qw(@ISA @EXPORT_OK);
 use Carp;
+use HTML::TreeBuilder;
 
 require Exporter;
 @ISA = qw(Exporter);
@@ -31,10 +32,13 @@ use DBD::Pg qw(:pg_types);
 use Time::HiRes qw(gettimeofday tv_interval);
 use Bit::Vector;
 use Manitou::Log qw(error_log notice_log);
-use Manitou::Config qw(getconf);
+use Manitou::Config qw(getconf getconf_bool);
 use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
+use Manitou::Attachments;
+use Manitou::Database qw(bytea_output);
 use Unicode::Normalize;
 use integer;
+use Data::Dumper;
 
 # cache for indexed words
 my %hwords;
@@ -121,6 +125,7 @@ sub load_stopwords {
 
 sub flush_word_vectors {
   my $dbh=shift;
+  my $options=shift;
 
   my $sthu=$dbh->prepare("UPDATE inverted_word_index SET mailvec=?,nz_offset=? WHERE word_id=? AND part_no=?") or croak $dbh->errstr;
 
@@ -129,6 +134,7 @@ sub flush_word_vectors {
   my $vec_cnt_insert=0;
   my $vec_cnt_update=0;
   my $t0 = [gettimeofday];
+  my @insert_array;
 
   foreach my $wid (keys %vecs) {
     foreach my $part (keys %{$vecs{$wid}}) {
@@ -154,11 +160,19 @@ sub flush_word_vectors {
       }
       if (defined $vecs{$wid}->{$part}->{insert}) {
 	#insert
-	$sthi->bind_param(1, $wid);
-	$sthi->bind_param(2, $part);
-	$sthi->bind_param(3, $bits, { pg_type => DBD::Pg::PG_BYTEA });
-	$sthi->bind_param(4, $nz_offset);
-	$sthi->execute or croak $dbh->errstr;
+	if (!defined $options->{copy_mode}) {
+	  $sthi->bind_param(1, $wid);
+	  $sthi->bind_param(2, $part);
+	  $sthi->bind_param(3, $bits, { pg_type => DBD::Pg::PG_BYTEA });
+	  $sthi->bind_param(4, $nz_offset);
+	  $sthi->execute or croak $dbh->errstr;
+	}
+	else {
+	  my $bits_text=$dbh->quote($bits, { pg_type=>DBD::Pg::PG_BYTEA });
+	  $bits_text =~ s/''/'/g;
+	  $bits_text = substr($bits_text,2,length($bits_text)-3);
+	  push @insert_array, [ $wid, $part, $bits_text, $nz_offset ];
+	}
 	delete $vecs{$wid}->{$part}->{insert};
 	$vec_cnt_insert++;
       }
@@ -177,10 +191,20 @@ sub flush_word_vectors {
       delete $vecs{$wid}->{$part}->{dirty};
     }
   }
-  my $sthd=$dbh->prepare("DELETE FROM jobs_queue WHERE mail_id=? AND job_type='widx'");
-  foreach (@flush_queue) {
-    $sthd->execute($_);
+  if (!defined $options->{no_jobs_queue}) {
+    my $sthd=$dbh->prepare("DELETE FROM jobs_queue WHERE mail_id=? AND job_type='widx'");
+    foreach (@flush_queue) {
+      $sthd->execute($_);
+    }
   }
+  if (@insert_array>0) {
+    $dbh->do("COPY inverted_word_index(word_id,part_no,mailvec,nz_offset) FROM STDIN");
+    foreach my $vl (@insert_array) {
+      $dbh->pg_putcopydata(join("\t", @{$vl})."\n");
+    }
+    $dbh->pg_putcopyend();
+  }
+
   @flush_queue=();
   $last_flush_time=time;
   notice_log(sprintf("Index vectors flush: %d inserted, %d updated in %0.2fs",$vec_cnt_insert, $vec_cnt_update, tv_interval($t0)));
@@ -230,7 +254,7 @@ sub clear_last_indexed_mail {
 sub extract_words {
   my ($ptext, $tb)=@_;
   my %seen;
-  foreach (split(/[\s+,\.\(\)\\<\>\x{2019}\x{ab}\x{bb}\"'`:;\/!\[\]\?=*\|]/, $$ptext)) {
+  foreach (split(/[\x{0}-\x{1e}\x{80}-\x{bf}\s+,\.\(\)\\<\>\{\}\x{2013}\x{2019}\x{201c}\x{201d}\"'`:;\/!\[\]\?=*\|]/o, $$ptext)) {
     next if (/^[-_#%|*=]+$/);  # skip horizontal separation lines
     if (/^[-~*_^|_=]+(.*)$/) {
       $_ = $1;
@@ -238,30 +262,59 @@ sub extract_words {
     if (/^([^-~*^|_=]+)[-~*^|_=]+$/) {
       $_ = $1;
     }
+
     next if (length($_)<=2 || length($_)>50);
     $_=lc($_);
     next if (exists $seen{$_});
     $seen{$_}=1;
     next if (exists $no_index_words{$_});
-    if (/^[0-9_a-z]+$/) {
-      push @{$tb}, $_;
-    }
-    else {
-      if ($unaccent) {
-	my $w=NFD($_);
-	$w =~ s/\pM//g;  # strip combining characters
-	if ($add_unaccent) {
-	  push @{$tb}, ($_, $w);
-	}
-	else {
+
+    if ($unaccent && ! /^[0-9_a-z]+$/) {
+      my $w=NFD($_);
+      $w =~ s/\pM//g;  # strip combining characters
+      if ($w ne $_) {
+	if (!exists $seen{$w} && !exists $no_index_words{$w}) {
+	  # push the non-accented version
 	  push @{$tb}, $w;
+	  $seen{$w}=1;
 	}
+	push @{$tb}, $_ if ($add_unaccent);
       }
       else {
 	push @{$tb}, $_;
       }
     }
+    else {
+      push @{$tb}, $_;
+    }
+    # Add components of compound words
+    my @cw=split /-/;
+    if (@cw>1) {
+      foreach (@cw) {
+	next if (length($_)<=2 || length($_)>50);
+	next if (exists $seen{$_});
+	$seen{$_}=1;
+	next if (exists $no_index_words{$_});
+	if ($unaccent && ! /^[0-9_a-z]+$/) {
+	  my $w=NFD($_);
+	  $w =~ s/\pM//g;	# strip combining characters
+	  if ($w ne $_) {
+	    if (!exists $seen{$w} && !exists $no_index_words{$w}) {
+	      # push the non-accented version
+	      push @{$tb}, $w;
+	      $seen{$w}=1;
+	    }
+	    push @{$tb}, $_ if ($add_unaccent);
+	  } else {
+	    push @{$tb}, $_;
+	  }
+	} else {
+	  push @{$tb}, $_;
+	}
+      }
+    }
   }
+
   # extract complete email addresses, plus local part and domain
   # components, with and without TLD
   while ($$ptext =~ m/\b([A-Z0-9._%+-]+)\@([A-Z0-9.-]+)\.([A-Z]+)\b/gi) {
@@ -276,25 +329,32 @@ sub extract_words {
 	$seen{$_}=1;
       }
     }
+    # If the local part contains dots, extract parts
+    foreach (split /\./, $lp) {
+      next if (length($_)>50 || length($_)<=2);
+      if (!exists $seen{$_}) {
+	push @{$tb}, $_;
+	$seen{$_}=1;
+      }
+    }
   }
 }
 
 
 sub index_words {
-  my ($dbh, $mail_id, $pbody, $pheader)=@_;
+  my ($dbh, $mail_id, $pbody, $pheader, $ref_more_text)=@_;
   load_partsize($dbh) if !defined($partsize);
   get_accents_conf() if (!$accents_configured);
 
   my $cnt=0;
-  my $sth_seq = $dbh->prepare("SELECT nextval('seq_word_id')");
   my $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?");
-  my $sth_n = $dbh->prepare("INSERT INTO words(word_id,wordtext) VALUES (?,?)");
+  my $sth_n = $dbh->prepare("INSERT INTO words(word_id,wordtext) VALUES (nextval('seq_word_id'),?) RETURNING word_id");
   my $svec = $dbh->prepare("SELECT mailvec,nz_offset FROM inverted_word_index WHERE word_id=? AND part_no=?");
 
   my @words;
   extract_words($pbody, \@words);
   extract_words($pheader, \@words) if (defined $pheader);
-
+  extract_words($ref_more_text, \@words) if (defined $ref_more_text);
 
   # hbody_words contains a unique entry for each word occurring in the
   # body, and is used to avoid inserting multiple (word_id,mail_id) tuples.
@@ -317,14 +377,8 @@ sub index_words {
       }
       else {
 	# The word isn't in the words table: let's insert it
-	$sth_seq->execute;
-	($word_id) = $sth_seq->fetchrow_array;
-	eval {
-	  $sth_n->execute($word_id, $se);
-        };
-	if ($@) {
-	  die "$@\nword=$se\n";;
-	}
+	$sth_n->execute($se);
+	($word_id) = $sth_n->fetchrow_array;
 	$hwords{$s}=$word_id;
       }
     }
@@ -480,7 +534,7 @@ sub search {
 # the mail
 sub header_contents_to_ftidx {
   my $r;
-  while ($_[0] =~ /^(Subject|From|To|Cc): (.*)$/img) {
+  while ($_[0] =~ /^(Subject|From|To|Cc|Date): (.*)$/img) {
     $r.="$2\n";
   }
   return $r;
@@ -489,23 +543,76 @@ sub header_contents_to_ftidx {
 
 sub flush_jobs_queue {
   my $dbh=shift;
-  my $sth=$dbh->prepare("SELECT job_id,mail_id FROM jobs_queue WHERE job_type='widx'") or die $dbh->errstr;
-  my $sthb=$dbh->prepare("SELECT bodytext FROM body WHERE mail_id=?");
-  my $sthh=$dbh->prepare("SELECT lines FROM header WHERE mail_id=?");
-  $sth->execute or die $dbh->errstr;
-  while (my ($job_id,$mail_id)=$sth->fetchrow_array) {
-    $sthb->execute($mail_id) or die $dbh->errstr;
-    my ($body)=$sthb->fetchrow_array;
-    $sthh->execute($mail_id) or die $dbh->errstr;
-    my ($header)=$sthh->fetchrow_array;
-    $body = decode_dbtxt($body);
-    $header = decode_dbtxt($header);
-    $header = Manitou::Words::header_contents_to_ftidx($header);
-    index_words($dbh, $mail_id, \$body, \$header);
+  my $sth=$dbh->prepare("SELECT job_id,mail_id FROM jobs_queue WHERE job_type='widx'");
+  $sth->execute;
+  if ($sth->rows>0) {
+    my %extractors = Manitou::Attachments::text_extractors();
+    my $idx_html = getconf_bool("index_words_html_parts");
+
+    my $col_html = $idx_html ? "bodyhtml":"null";
+    my $sthb=$dbh->prepare("SELECT bodytext,$col_html FROM body WHERE mail_id=?");
+    my $sthh=$dbh->prepare("SELECT lines FROM header WHERE mail_id=?");
+    while (my ($job_id,$mail_id)=$sth->fetchrow_array) {
+      $sthb->execute($mail_id) or die $dbh->errstr;
+      my ($body,$html)=$sthb->fetchrow_array;
+      $sthh->execute($mail_id) or die $dbh->errstr;
+      my ($header)=$sthh->fetchrow_array;
+      $body = decode_dbtxt($body);
+      my $other_words;
+      if ($html) {
+	$html = decode_dbtxt($html);
+	$other_words = html_to_text(\$html);
+      }
+      $header = decode_dbtxt($header);
+      $header = Manitou::Words::header_contents_to_ftidx($header);
+      if (scalar(%extractors)!=0 || ($idx_html && length($html)>0)) {
+	Manitou::Attachments::launch_text_extractors($dbh, $mail_id,
+						     \%extractors,
+						     \$other_words);
+      }
+      index_words($dbh, $mail_id, \$body, \$header, \$other_words);
+    }
   }
+
   if (queue_size()>0) {
     flush_word_vectors($dbh);
     clear_word_vectors;
   }
 }
+
+# Taken from HTML::Element::as_text and modified to add a space
+# after each piece of text
+sub in_html_to_text {
+  # Yet another iteratively implemented traverser
+  my($this,%options) = @_;
+  my $nillio = [];
+  my(@pile) = ($this);
+  my $tag;
+  my $text = '';
+
+  while(@pile) {
+    if(!defined($pile[0])) { # undef!
+      # no-op
+    } elsif(!ref($pile[0])) { # text bit!  save it!
+      $text .= (shift @pile)." ";
+    } else { # it's a ref -- traverse under it
+      unshift @pile, @{$this->{'_content'} || $nillio}
+        unless
+          ($tag = ($this = shift @pile)->{'_tag'}) eq 'style'
+          or $tag eq 'script';
+    }
+  }
+  return $text;
+}
+
+# In: html source
+sub html_to_text {
+  my $tree = HTML::TreeBuilder->new;
+  $tree->store_declarations(0);
+  eval {
+    $tree->parse_content($_[0]);
+  };
+  return $@ ? undef:in_html_to_text($tree);
+}
+
 1;

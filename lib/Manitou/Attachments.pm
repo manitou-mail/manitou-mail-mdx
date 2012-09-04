@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2010 Daniel Verite
+# Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -26,7 +26,11 @@ use Carp;
 use POSIX qw(tmpnam);
 use Encode;
 use Manitou::Encoding qw(encode_dbtxt header_decode);
+use Manitou::Log qw(error_log warning_log);
+use Manitou::Config qw(getconf);
 use Digest::SHA1;
+use IPC::Open3;
+use IO::Handle;
 
 require Exporter;
 @ISA = qw(Exporter);
@@ -159,7 +163,6 @@ sub insert_attachment {
 
   my $charset=header_decode($mime_obj->head->mime_attr("content-type.charset"));
   $stha->bind_param(++$pos, encode_dbtxt(substr($charset,0,30)));
-  LogError($stha->errstr) if $stha->err;
 
   my $content_id=$mime_obj->get("Content-ID");
   # content-ID syntax must be <addr-spec> (RFC2111)
@@ -311,3 +314,115 @@ sub create_html_part {
   $sth->finish;
   return $part;
 }
+
+# Input: identity
+sub text_extractors {
+  my $word_extractors = getconf('index_words_extractors', $_[0]);
+  my %extractors;
+  if (defined $word_extractors && @{$word_extractors}>0) {
+    foreach (@{$word_extractors}) { # content_type : program
+      # TODO: keep only the extractors that match content types for which
+      # we have actual attachments for this message.
+      # Get the attachments list in this function and pass them
+      # to attach_parts() and launch_text_extractors() rather than
+      # letting these functions query the database.
+      if (/^(.*)\s*:\s*(.*)\s*$/) {
+	$extractors{$1}=$2;
+      }
+      else {
+	warning_log("Entry ignored in index_words_extractors: $_");
+      }
+    }
+  }
+  return %extractors;
+}
+
+# $commands: hashref {"content_type"=>"command to extract words"}
+# Requires the db connection to be inside a transaction because of the
+# operations on large objects
+#
+# Returns: 0 on failure, 1 otherwise.
+sub launch_text_extractors {
+  my ($dbh, $mail_id, $commands, $ref_text)=@_;
+
+  my $sth = $dbh->prepare("SELECT a.attachment_id,a.content_type,a.content_size,ac.content FROM attachments a JOIN attachment_contents ac ON a.attachment_id=ac.attachment_id WHERE a.mail_id=? AND a.mime_content_id IS NULL");
+  my $errmsg;
+
+  $sth->execute($mail_id);
+
+  while (my $row = $sth->fetchrow_hashref) {
+    my $ct=$row->{content_type};
+    if (exists $commands->{$ct}) {
+      my $cmd=$commands->{$ct};
+      my $output;
+      # Pipe the contents to the extractor and get results into $output
+      my $ret=0;
+      my $in=IO::Handle->new();
+      my $out=IO::Handle->new();
+      my $err=IO::Handle->new();
+      eval {
+	$SIG{'PIPE'} = 'IGNORE';
+	my $pid = open3($in, $out, $err, $cmd) or die $!;
+	binmode $out, ':utf8';
+	$out->blocking(0);
+	my $bits;
+	vec($bits, fileno($out), 1)=1;
+
+	my $content_size = $row->{content_size};
+	my $lobj_fd = $dbh->func($row->{content}, $dbh->{pg_INV_READ}, 'lo_open');
+	die $dbh->errstr if (!defined $lobj_fd);
+	my $buf;
+	my $nbytes;
+	while ($content_size>0) {
+	  $nbytes = $dbh->func($lobj_fd, $buf, $content_size>524288 ? 524288:$content_size, 'lo_read');
+	  die $dbh->errstr if (!defined $nbytes);
+	  $content_size -= $nbytes;
+	  # Send to script
+	  print $in $buf;
+	  while (select(undef, $bits, undef, 0.2)) {
+	    # read the output of the extractor during execution
+	    # to avoid too much buffering
+	    $$ref_text.=<$out>;
+	  }
+	}
+	$dbh->func($lobj_fd, 'lo_close');
+	close($in);
+	$out->blocking(1);
+	while (<$out>) {
+	  $$ref_text .=$_;
+	}
+	waitpid($pid, 0);
+      };
+      my $base_msg="Attachments text extractor execution error (\`$cmd\`, exit code=".($?>>8)."), message #$mail_id, attachment #$row->{attachment_id}";
+      if ($@) {
+	$errmsg="$base_msg: $@";
+      }
+      else {
+	my $e=<$err>;
+	if ($e ne "" || ($?>>8)!=0) {
+	  $errmsg= "$base_msg: $e";
+	}
+      }
+      $SIG{'PIPE'}='DEFAULT';
+      close($err);
+      close($out);
+      if ($errmsg) {
+	error_log($errmsg);
+	return 0;
+      }
+    }
+    elsif ($ct eq "text/html") {
+      # Built-in default extractor for HTML attachments
+      my $lobj_fd = $dbh->func ($row->{content}, $dbh->{pg_INV_READ}, 'lo_open');
+      die $dbh->errstr if (!defined $lobj_fd);
+      my $buf;
+      if ($dbh->func($lobj_fd, $buf, $row->{content_size}, 'lo_read')) {
+	$$ref_text .= Manitou::Words::html_to_text($buf);
+      }
+      $dbh->func ($lobj_fd, 'lo_close');
+    }
+  }
+  1;
+}
+
+1;
