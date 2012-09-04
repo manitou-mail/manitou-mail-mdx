@@ -557,7 +557,7 @@ $$ LANGUAGE plpgsql
 EOFUNCTION
 ,
 "wordsearch" => <<'EOFUNCTION'
-CREATE OR REPLACE FUNCTION wordsearch(in_words text[]) RETURNS SETOF integer
+CREATE OR REPLACE FUNCTION wordsearch(in_words text[],out_words text[]) RETURNS SETOF integer
 AS $$
 DECLARE
  var_nb_words integer := array_upper(in_words,1);
@@ -569,7 +569,9 @@ DECLARE
  i integer;
  j integer;
  var_vect bytea;
- and_vect bytea; -- vectors ANDed together
+ var2_vect bytea;
+ and_vect bytea:=null; -- vectors ANDed together
+ excl_vect bytea; -- for words that must not be in the text (out_words)
  var_nz_offset integer;
 BEGIN
   FOR var_part_no IN (select part_no FROM inverted_word_index WHERE word_id in (select word_id from words where wordtext=any(in_words))  GROUP BY part_no HAVING count(*)=var_nb_words ORDER BY part_no)
@@ -580,9 +582,42 @@ BEGIN
 	var_vect:=repeat(E'\\000', var_nz_offset)::bytea || var_vect;
       END IF;
       IF (cnt=0) THEN
-	and_vect:=var_vect;  -- first vector
-      ELSE
-	-- next vectors
+        IF array_upper(out_words,1)>0 THEN
+	  excl_vect:=null;
+	  FOR var2_vect IN SELECT repeat(E'\\000', nz_offset)::bytea||mailvec FROM inverted_word_index WHERE word_id in (select word_id from words where wordtext=any(out_words)) AND part_no=var_part_no
+	  LOOP
+	    IF excl_vect is null THEN
+	      excl_vect:=var2_vect;
+	    ELSE
+	      IF (length(excl_vect) > length(var2_vect)) THEN
+		var2_vect:=var2_vect||repeat(E'\\000', length(excl_vect)-length(var2_vect));
+	      ELSEIF (length(excl_vect) < length(var2_vect)) THEN
+		excl_vect:= excl_vect || repeat(E'\\000', length(var2_vect)-length(excl_vect));
+	      END IF;
+	      -- excl_vect := excl_vect OR var2_vect
+	      len:=length(excl_vect)-1;
+	      FOR i in 0..len LOOP
+		b1:=get_byte(excl_vect, i);
+		b2:=get_byte(var2_vect, i);
+		IF (b1|b2 <> b1) THEN
+		  SELECT set_byte(excl_vect, i, b1|b2) INTO excl_vect;
+		END IF;
+	      END LOOP;
+	    END IF;
+	  END LOOP; -- for each word to exclude
+          IF excl_vect is not null THEN
+	    -- invert excl_vect (bitwise NOT) to make it an AND mask against
+	    -- the vectors of the words included in the search
+	      len:=length(excl_vect)-1;
+	      FOR i in 0..len LOOP
+		b1:=get_byte(excl_vect, i);
+		SELECT set_byte(excl_vect, i, ~b1) INTO excl_vect;
+	      END LOOP;
+	  END IF;
+        END IF; -- out_words is not empty
+	and_vect:=excl_vect;
+      END IF;
+      IF and_vect IS NOT NULL THEN
 	-- reduce result if necessary
 	IF (length(and_vect) > length(var_vect)) THEN
 	  and_vect:=substring(and_vect for length(var_vect));
@@ -595,9 +630,11 @@ BEGIN
 	    SELECT set_byte(and_vect, i, b1&b2) INTO and_vect;
 	  END IF;
 	END LOOP;
+      ELSE
+	and_vect:=var_vect;
       END IF;
       cnt:=cnt+1;
-    END LOOP; -- on vectors
+    END LOOP; -- on vectors of the same part_no
 
     -- extract the set of mail_id's for this part_no from the vector
     len:=length(and_vect)-1;
