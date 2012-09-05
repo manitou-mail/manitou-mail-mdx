@@ -440,7 +440,7 @@ sub reindex_words {
     }
 
     print "Flushing word vectors..." unless ($opt_quiet);
-    flush_word_vectors($dbh, {'copy_mode'=>1, 'no_jobs_queue'=>1});
+    flush_word_vectors($dbh, {'no_jobs_queue'=>1});
     clear_word_vectors();
     $part_no++;
     $dbh->commit;

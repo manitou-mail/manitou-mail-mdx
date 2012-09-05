@@ -79,19 +79,19 @@ sub queue_size {
 
 sub load_partsize {
   my $dbh=shift;
-  my $s=$dbh->prepare("SELECT rt_value FROM runtime_info WHERE rt_key='word_index_partsize'") or croak $dbh->errstr;
-  $s->execute or croak $dbh->errstr;
+  my $s=$dbh->prepare("SELECT rt_value FROM runtime_info WHERE rt_key='word_index_partsize'");
+  $s->execute;
   ($partsize) = $s->fetchrow_array;
   # If no 'word_index_partsize' entry, we assume a default value, but 
   # only if nothing has been indexed yet
   if ($s->rows==0) {
-    $s=$dbh->prepare("SELECT word_id FROM inverted_word_index LIMIT 1") or croak $dbh->errstr;
-    $s->execute or croak $dbh->errstr;
+    $s=$dbh->prepare("SELECT word_id FROM inverted_word_index LIMIT 1");
+    $s->execute;
     if ($s->rows!=0) {
       croak "Fatal error: unable to find a 'word_index_partsize' entry in the RUNTIME_INFO table and INVERTED_WORD_INDEX is not empty\n";
     }
     $partsize=16384;		# default value
-    $dbh->do("INSERT INTO runtime_info(rt_key,rt_value) VALUES('word_index_partsize','16384')") or croak $dbh->errstr;
+    $dbh->do("INSERT INTO runtime_info(rt_key,rt_value) VALUES('word_index_partsize','16384')");
   }
   return $partsize;
 }
@@ -115,8 +115,8 @@ sub get_accents_conf {
 
 sub load_stopwords {
   my $dbh=shift;
-  my $sth=$dbh->prepare("SELECT wordtext FROM non_indexable_words") or croak $dbh->errstr;
-  $sth->execute or croak $dbh->errstr;
+  my $sth=$dbh->prepare("SELECT wordtext FROM non_indexable_words");
+  $sth->execute;
   while (my @row=$sth->fetchrow_array) {
     $no_index_words{$row[0]}=1;
   }
@@ -127,9 +127,7 @@ sub flush_word_vectors {
   my $dbh=shift;
   my $options=shift;
 
-  my $sthu=$dbh->prepare("UPDATE inverted_word_index SET mailvec=?,nz_offset=? WHERE word_id=? AND part_no=?") or croak $dbh->errstr;
-
-  my $sthi=$dbh->prepare("INSERT INTO inverted_word_index(word_id,part_no,mailvec,nz_offset) VALUES (?,?,?,?)") or croak $dbh->errstr;
+  my $sthu=$dbh->prepare("UPDATE inverted_word_index SET mailvec=?,nz_offset=? WHERE word_id=? AND part_no=?");
 
   my $vec_cnt_insert=0;
   my $vec_cnt_update=0;
@@ -160,19 +158,10 @@ sub flush_word_vectors {
       }
       if (defined $vecs{$wid}->{$part}->{insert}) {
 	#insert
-	if (!defined $options->{copy_mode}) {
-	  $sthi->bind_param(1, $wid);
-	  $sthi->bind_param(2, $part);
-	  $sthi->bind_param(3, $bits, { pg_type => DBD::Pg::PG_BYTEA });
-	  $sthi->bind_param(4, $nz_offset);
-	  $sthi->execute or croak $dbh->errstr;
-	}
-	else {
-	  my $bits_text=$dbh->quote($bits, { pg_type=>DBD::Pg::PG_BYTEA });
-	  $bits_text =~ s/''/'/g;
-	  $bits_text = substr($bits_text,2,length($bits_text)-3);
-	  push @insert_array, [ $wid, $part, $bits_text, $nz_offset ];
-	}
+	my $bits_text=$dbh->quote($bits, { pg_type=>DBD::Pg::PG_BYTEA });
+	$bits_text =~ s/''/'/g;
+	$bits_text = substr($bits_text,2,length($bits_text)-3);
+	push @insert_array, [ $wid, $part, $bits_text, $nz_offset ];
 	delete $vecs{$wid}->{$part}->{insert};
 	$vec_cnt_insert++;
       }
@@ -182,7 +171,7 @@ sub flush_word_vectors {
 	$sthu->bind_param(2, $nz_offset);
 	$sthu->bind_param(3, $wid);
 	$sthu->bind_param(4, $part);
-	$sthu->execute or croak $dbh->errstr;
+	$sthu->execute;
 	$vec_cnt_update++;
       }
       if (length($bits)+$nz_offset>$partsize/8) {
@@ -191,18 +180,20 @@ sub flush_word_vectors {
       delete $vecs{$wid}->{$part}->{dirty};
     }
   }
-  if (!defined $options->{no_jobs_queue}) {
-    my $sthd=$dbh->prepare("DELETE FROM jobs_queue WHERE mail_id=? AND job_type='widx'");
-    foreach (@flush_queue) {
-      $sthd->execute($_);
-    }
-  }
+
   if (@insert_array>0) {
     $dbh->do("COPY inverted_word_index(word_id,part_no,mailvec,nz_offset) FROM STDIN");
     foreach my $vl (@insert_array) {
       $dbh->pg_putcopydata(join("\t", @{$vl})."\n");
     }
     $dbh->pg_putcopyend();
+  }
+
+  if (!defined $options->{no_jobs_queue}) {
+    my $sthd=$dbh->prepare("DELETE FROM jobs_queue WHERE mail_id=? AND job_type='widx'");
+    foreach (@flush_queue) {
+      $sthd->execute($_);
+    }
   }
 
   @flush_queue=();
@@ -391,7 +382,7 @@ sub index_words {
     my $bit_id = ($mail_id-1) % $partsize;
     my $vec = $vecs{$word_id}->{$part_no}->{v};
     if (!defined $vec) {
-      $svec->execute($word_id, $part_no) or croak $dbh->errstr;
+      $svec->execute($word_id, $part_no);
       if ($svec->rows>0) {
 	# found in db
 	my @r=$svec->fetchrow_array;
@@ -429,10 +420,10 @@ sub index_words {
 sub fetch_vec {
   my ($sth_w, $svec, $vr, $w)=@_;
 
-  $sth_w->execute($w) or croak $sth_w->errstr;
+  $sth_w->execute($w);
   my ($wid)=$sth_w->fetchrow_array;
   return 0 if (!$wid);
-  $svec->execute($wid) or croak $svec->errstr;
+  $svec->execute($wid);
   while (my ($vecbits,$part,$nz_offset) = $svec->fetchrow_array) {
     my $bits = "\000"x$nz_offset . $vecbits;
     my $v = Bit::Vector->new(length($bits)*8);
@@ -474,8 +465,8 @@ sub search {
   my $dbh=shift;
   load_partsize($dbh) if !defined($partsize);
   my ($nb_substrings, $nb_words);
-  my $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?") or croak $dbh->errstr;
-  my $svec = $dbh->prepare("SELECT mailvec,part_no,nz_offset FROM inverted_word_index WHERE word_id=?") or croak $dbh->errstr;
+  my $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?");
+  my $svec = $dbh->prepare("SELECT mailvec,part_no,nz_offset FROM inverted_word_index WHERE word_id=?");
 
   my %vres;
   my @res_substrings;
@@ -498,8 +489,8 @@ sub search {
       my $mid=join(',', vecs_to_mailid(\%vr));
       if ($mid) {
 	my $qw=$dbh->quote("%$w%");
-	my $s=$dbh->prepare("SELECT mail_id FROM body WHERE bodytext ilike $qw AND mail_id IN ($mid) ORDER BY mail_id") or croak $dbh->errstr;
-	$s->execute or croak $dbh->errstr;
+	my $s=$dbh->prepare("SELECT mail_id FROM body WHERE bodytext ilike $qw AND mail_id IN ($mid) ORDER BY mail_id");
+	$s->execute;
 	my @r;
 	while (my @rr=$s->fetchrow_array) {
 	  push @r, $rr[0];
