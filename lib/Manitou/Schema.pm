@@ -896,6 +896,7 @@ sub upgrade_schema_statements {
     push @stmt, "ALTER TABLE jobs_queue ADD status SMALLINT";
     push @stmt, $tables{"import_mbox"};
     push @stmt, $tables{"import_message"};
+    push @stmt, $functions{"wordsearch"};
   }
   return @stmt;
 }
