@@ -21,12 +21,11 @@ package Manitou::Words;
 use strict;
 use vars qw(@ISA @EXPORT_OK);
 use Carp;
-use HTML::TreeBuilder;
 
 require Exporter;
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(load_stopwords index_words flush_word_vectors
-		clear_word_vectors queue_size last_flush_time search load_partsize);
+@EXPORT_OK = qw(load_stopwords index_words flush_word_vectors clear_word_vectors
+		queue_size last_flush_time search load_partsize);
 
 use DBD::Pg qw(:pg_types);
 use Time::HiRes qw(gettimeofday tv_interval);
@@ -37,6 +36,7 @@ use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
 use Manitou::Attachments;
 use Manitou::Database qw(bytea_output);
 use Unicode::Normalize;
+use HTML::TreeBuilder;
 use integer;
 use Data::Dumper;
 
@@ -47,6 +47,7 @@ my %hwords;
 # $vecs{$widx}->{$part_no} => vector for the word of index $widx and
 # for the messages whose mail_id fit in the $part_no partition
 my %vecs;
+our $vecs_estim_size;		# estimated size in bytes
 
 my %no_index_words;
 
@@ -174,9 +175,11 @@ sub flush_word_vectors {
 	$sthu->execute;
 	$vec_cnt_update++;
       }
-      if (length($bits)+$nz_offset>$partsize/8) {
-	die sprintf("Vector too large (%d bytes) for (word_id,part_no)=(%d,%d)", length($bits)+$nz_offset, $wid, $part);
-      }
+      # Can't do this check with indexes created with pre-1.3.0 versions
+      # and not recreated.
+      # if (length($bits)+$nz_offset>$partsize/8) {
+      #	die sprintf("Vector too large (%d bytes) for (word_id,part_no)=(%d,%d)", length($bits)+$nz_offset, $wid, $part);
+      #      }
       delete $vecs{$wid}->{$part}->{dirty};
     }
   }
@@ -208,6 +211,7 @@ sub last_flush_time {
 sub clear_word_vectors {
   %vecs=();
   %hwords=();
+  $vecs_estim_size=0;
 }
 
 # Clear the bits corresponding to a mail_id in the inverted word
@@ -333,7 +337,7 @@ sub extract_words {
 
 
 sub index_words {
-  my ($dbh, $mail_id, $pbody, $pheader, $ref_more_text)=@_;
+  my ($dbh, $mail_id, $pbody, $pheader, $ref_more_text, $isub, $ctxt)=@_;
   load_partsize($dbh) if !defined($partsize);
   get_accents_conf() if (!$accents_configured);
 
@@ -352,35 +356,43 @@ sub index_words {
   my %hbody_words;
 
   for my $s (@words) {
-    my $word_id;
     next if (defined($no_index_words{$s}) or defined($hbody_words{$s}));
     $hbody_words{$s}=1;
 
     # Find the word_id
-    if (!defined($hwords{$s})) {
-      my $se=encode_dbtxt($s);
+    my $word_id=$hwords{$s};
+    if (!defined $word_id) {
       # The word hasn't been encountered before in any mail
-      $sth_w->execute($se);
-      my @r=$sth_w->fetchrow_array;
-      if (@r) {
-	$word_id=$r[0];
+      my $se=encode_dbtxt($s);
+
+      if (defined $isub) {
+	$word_id = $isub->($se, $ctxt);	
+	if (!$word_id) {
+	  die "Failed to obtain a word_id for '$se' from external function";
+	}
 	$hwords{$s}=$word_id;
       }
       else {
-	# The word isn't in the words table: let's insert it
-	$sth_n->execute($se);
-	($word_id) = $sth_n->fetchrow_array;
-	$hwords{$s}=$word_id;
+	$sth_w->execute($se);
+	my @r=$sth_w->fetchrow_array;
+	if (@r) {
+	  $word_id=$r[0];
+	  $hwords{$s}=$word_id;
+	}
+	else {
+	  # The word isn't in the words table: let's insert it
+	  $sth_n->execute($se);
+	  ($word_id) = $sth_n->fetchrow_array;
+	  $hwords{$s}=$word_id;
+	}
       }
-    }
-    else {
-      $word_id=$hwords{$s};
     }
 
     # Find the vector
     my $part_no = $mail_id / $partsize;
     my $bit_id = ($mail_id-1) % $partsize;
     my $vec = $vecs{$word_id}->{$part_no}->{v};
+
     if (!defined $vec) {
       $svec->execute($word_id, $part_no);
       if ($svec->rows>0) {
@@ -388,11 +400,14 @@ sub index_words {
 	my @r=$svec->fetchrow_array;
 	my $bits = "\000"x$r[1] . $r[0];
 	$vec = Bit::Vector->new(length($bits)*8);
-	if (length($bits) > $partsize/8)	{ # sanity check
-	  die sprintf("Word vector read from database for (word_id=%d,part_no=%d) exceeds the maximum size (%d bytes,max=%d bytes)", $word_id, $part_no, length($bits), $partsize/8);
-	}
+	# Can't do this check with indexes created with pre-1.3.0 versions
+	# and not recreated.
+	# if (length($bits) > $partsize/8)	{ # sanity check
+	#  die sprintf("Word vector read from database for (word_id=%d,part_no=%d) exceeds the maximum size (%d bytes,max=%d bytes)", $word_id, $part_no, length($bits), $partsize/8);
+	# }
 	$vecs{$word_id}->{$part_no}->{v} = $vec;
 	$vec->Block_Store($bits);
+	$vecs_estim_size += ($vec->Size()+7)>>3;
       }
       else {
 	$vec = Bit::Vector->new($bit_id+1);
@@ -401,7 +416,10 @@ sub index_words {
 	$vecs{$word_id}->{$part_no}->{dirty} = 1;
       }
     }
-    $vec->Resize($bit_id+1) if ($vec->Size()<$bit_id+1);
+    if ($vec->Size()<$bit_id+1) {
+      $vecs_estim_size += scalar(($bit_id+1+7>>3)-($vec->Size()+7>>3));
+      $vec->Resize($bit_id+1);
+    }
     if (!$vec->bit_test($bit_id)) {
       $vec->Bit_On($bit_id);
       $vecs{$word_id}->{$part_no}->{dirty} = 1;
@@ -431,11 +449,13 @@ sub fetch_vec {
     if (defined $vr->{$part}) {
       if ($vr->{$part}->Size() < $v->Size()) {
 	$v->Resize($vr->{$part}->Size());
-      } elsif ($vr->{$part}->Size() > $v->Size()) {
+      }
+      elsif ($vr->{$part}->Size() > $v->Size()) {
 	$vr->{$part}->Resize($v->Size());
       }
       $vr->{$part}->And($vr->{$part}, $v);
-    } else {
+    }
+    else {
       $vr->{$part}=$v;
     }
   }
@@ -603,7 +623,9 @@ sub html_to_text {
   eval {
     $tree->parse_content($_[0]);
   };
-  return $@ ? undef:in_html_to_text($tree);
+  my $txt= $@ ? undef:in_html_to_text($tree);
+  $tree->delete();
+  return $txt;
 }
 
 1;
