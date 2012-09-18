@@ -261,6 +261,12 @@ sub create_database {
   $s2->finish;
   $dbh1->do("CREATE DATABASE $dbname OWNER $dbuser") or die;
   print "Database $dbname created.\n" unless ($opt_quiet);
+  if ($dbh1->{pg_server_version}/10000 >= 9) {
+    # Since Pg 9.0, each large object has it own ACL, except that lo_unlink() is ever
+    # only permitted to the object's owner. That's too restrictive for us; it would
+    # mean that only the db owner can delete messages, so we stick to pre-9.0 mode.
+    $dbh1->do("ALTER DATABASE $dbname SET lo_compat_privileges TO on") or die $dbh1->errstr;
+  }
   $dbh1->disconnect;
 
   # Reconnect to the new database as a superuser
@@ -377,9 +383,6 @@ sub clear_word_index {
 # Reindex a partition (inverted_word_index.part_no) in a forked process.
 # Several reindex jobs can run concurrently in different processes, each
 # with its own db connection.
-# Due to Perl's inefficiency in reusing the memory from our freed bitvectors,
-# we also manage our memory limit by terminating and respawning a
-# new child process when it has buffered enough word vectors.
 sub child_reindex {
   my ($cnx_string, $opt)=@_;
   my $dbh = DBI->connect($cnx_string) or die "Can't connect: $DBI::errstr";
