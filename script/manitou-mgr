@@ -319,6 +319,7 @@ sub create_schema {
 
 sub upgrade_schema {
   $dbh->begin_work;
+  $dbh->do("SET client_min_messages=warning");
   my $sth=$dbh->prepare("SELECT rt_value,current_database() FROM runtime_info WHERE rt_key='schema_version'");
   $sth->execute;
   my ($db_version,$db_name)=$sth->fetchrow_array;
@@ -342,7 +343,6 @@ sub upgrade_schema {
   my @stmt = Manitou::Schema::upgrade_schema_statements($dbh, $db_version, $db_current);
   eval {
     foreach (@stmt) {
-      print "Executing SQL: $_\n" unless ($opt_quiet);
       if ($opt_dry_run) {
 	print "$_;\n";
       }
@@ -833,7 +833,7 @@ where options are: [--conf=/path/to/config_file] [--quiet]
  merge attachments that share the same fingerprint. This is done automatically by manitou-mdx during normal import so this option shouldn't be used except for troubleshooting.
 
 =item B<reindex-full-text>: [--reindex-partitions=N[-M]] [--reindex-jobs=J]
- rebuild the full text index. Optionally starts at partition I<N> and ends at I<M>, flushing the index to the database and reclaming memory at the end of every partition. Different partitions can be indexed in I<J> jobs in parallel. Each job can be limited to I<B> megabytes used for buffering word vectors. The default value for <B> is 1000.
+ rebuild the full text index. Optionally starts at partition I<N> and ends at I<M>, flushing the index to the database and reclaming memory at the end of every partition. Different partitions can be indexed in I<J> jobs in parallel.
 
 =item B<clear-full-text-index>:
  clear the full text index by truncating the relevant SQL tables. This is recommended before a B<reindex-full-text> of the entire database.

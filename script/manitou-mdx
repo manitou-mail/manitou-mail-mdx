@@ -1929,6 +1929,52 @@ sub init_identities {
   }
 }
 
-# Local variables:
-# mode: CPerl
-# End:
+__END__
+
+=head1 NAME
+
+ manitou-mdx - Manitou-Mail Mail-Database eXchanger daemon
+
+=head1 SYNOPSIS
+
+  manitou-mdx [--conf=/path/to/config] [--fork] [--pidfile=/path/to/pidfile]
+  manitou-mdx [--conf=/path/to/config] --mboxfile=/path/to/mbox [--status=status] [--tag=tag] [--mailbox=mailbox] [--skip=number] [-v]
+
+=head1 DESCRIPTION
+
+When invoked without argument or with --fork, run continuously to import into the database the messages that appear in the spool directories as defined in the configuration file.
+
+=over
+
+=item B<fork>:
+ Create a new process to run in background and quit if no error occurred.
+
+=item B<pidfile>:
+ Write into I<pidfile> the process ID of the background process.
+
+=item B<mboxfile>:
+ Import a mailbox file (mbox format) and quit. When this options is used, manitou-mdx won't try to import any files from the spool directories defined in the configuration file or to send any outgoing message.
+
+=item B<status>:
+  When importing a mailbox, set the specificied status (a numeric value) to each imported message.
+
+=item B<tag>:
+  When importing a mailbox, assign the specificied tag (a name) to each imported message.
+
+=item B<skip>:
+ When importing a mailbox, skip the specificied number of messages before starting to import. This is useful to import in several steps.
+
+=item B<mailbox>:
+ When importing a mailbox, assign the imported messages to the specified mailbox. The mailbox name is generally a destination email address.
+
+=back
+
+=head1 CONFIGURATION
+
+=over
+
+The default configuration file is /etc/manitou-mdx.conf
+
+=back
+
+=cut
