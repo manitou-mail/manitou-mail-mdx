@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-# manitou-mdx v-1.3.0
+# manitou-mdx v-1.3.1
 # Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
@@ -50,6 +50,7 @@ use IO::Handle;
 use IPC::Open3;
 use Getopt::Long;
 use File::Temp qw(tempfile);
+use File::Basename qw(basename dirname);
 use Time::HiRes qw(gettimeofday tv_interval);
 
 
@@ -139,13 +140,42 @@ sub do_flush_word_vectors {
   print "done\n" if ($verbosity);
 }
 
+# mbox: identity from the configuration file
+# origin: {type=>tempfile|dot-received|maildir , location=>'/some/path' }
 sub import_mailfiles {
-  my ($mbox, $dir)=@_;
+  my ($mbox, $origin)=@_;
   my ($done, $ret);
 
-  opendir(DIR, $dir) || die "Unable to opendir $dir: $!\n(Check the mailfiles_directory configuration entry)";
-  my @files = grep (/^mail-(\d+\-\d+\-\d+)\.received$/, readdir(DIR));
-  closedir(DIR);
+  my @files;
+  my $dir;
+
+  if ($origin->{type} eq "dot-received") {
+    $dir=$origin->{location};
+    my $dh;
+    if (!opendir($dh, $dir)) {
+      error_log("Unable to opendir mailfiles_directory $dir: $!");
+      return 0;
+    }
+    @files=grep (/^mail-(\d+\-\d+\-\d+)\.received$/, readdir($dh));
+    closedir $dh;
+  }
+  elsif ($origin->{type} eq "maildir") {
+    $dir=$origin->{location}."/new";
+    my $dh;
+    if (!opendir($dh, $dir)) {
+      error_log("Unable to opendir $dir: $!");
+      return 0;
+    }
+    @files=grep { -f "$dir/$_" } readdir($dh);
+    closedir $dh;
+  }
+  elsif ($origin->{type} eq "tempfile") {
+    @files = (basename($origin->{location}));
+    $dir = dirname($origin->{location});
+  }
+  else {
+    error_log("Unknown type in import for identity '$mbox'");
+  }
 
   my $import_count=0;
   foreach my $fname (sort @files) {
@@ -157,12 +187,20 @@ sub import_mailfiles {
     $fname = "$dir/$fname";
     my $st=stat($fname);
     my $proc_filename = $fname;
-    $proc_filename =~ s/(.*)\.received$/$1.$$.processing/;
-    my $basename=$1;
+    my $basename = $fname;
+    my $do_process=1;
+    if ($origin->{type} eq "dot-received") {
+      $proc_filename =~ s/(.*)\.received$/$1.$$.processing/;
+      $basename=$1;
+      if (!$st || !rename($fname, $proc_filename)) {
+	$do_process=0;	
+	error_log("Cannot rename $fname");
+      }
+    }
     if (getconf_bool("auto_db_reconnect") && !$dbh->ping()) {
       db_reconnect();
     }
-    if ($st && rename($fname, $proc_filename)) {
+    if ($do_process) {
       my $t0 = [gettimeofday];
 
       $import_count++;
@@ -199,7 +237,7 @@ sub import_mailfiles {
       else {
 	$ret=0;
       }
-      $done  = $proc_filename;
+      $done = $proc_filename;
       if ($ret>0) {
 	$done = "$basename.processed";
       } elsif ($ret==0) {
@@ -207,7 +245,14 @@ sub import_mailfiles {
       } elsif ($ret==-1) {
 	$done = "$basename.discarded";
       }
-      if (rename($proc_filename, $done)) {
+      my $done_ok=1;
+      if ($origin->{type} eq "dot-received") {
+	if (!rename($proc_filename, $done)) {
+	  error_log("Rename failed: $proc_filename => $done");
+	  $done_ok=0;
+	}
+      }
+      if ($done_ok) {
 	if ($ret>0) {
 	  $plugins_ctxt{filename}=$done;
 	  $plugins_ctxt{stage}="postprocess";
@@ -239,17 +284,11 @@ sub import_mailfiles {
 	    warning_log("Execution of postprocess_mailfile_cmd failed (\`$cmd\`, exit code=".($?>>8).")");
 	  }
 	}
-      } else {
-	error_log("Rename failed: $proc_filename => $done");
-      }
-    } else {
-      # we couldn't stat or rename the .received file. Check if it has disappeared
-      # (no error) or not (error)
-      # If the file has disappeared between the time when it's been seen
-      # in the directory and the rename, we assume another process
-      # has processed it or it has been genuinely deleted
-      if (stat($fname)) {
-	LogError("Cannot rename $fname");
+	if ($origin->{type} eq "maildir") {
+	  if (!unlink($proc_filename)) {
+	    error_log("Failed to delete file $proc_filename: $!");
+	  }
+	}
       }
     }
 
@@ -293,6 +332,41 @@ sub db_reconnect {
   notice_log("Successful database reconnect");
 }
 
+
+# Extract one message from a mailbox and copy it into a temporary file
+# The first line may be ^From_ but it may also be the next line
+# when the ^From_ has already been read as the end marker of the previous
+# message
+sub extract_mbox_tmpfile {
+  my ($pfh)=@_;  # may be at end of file
+  my $fh=$$pfh;
+  my $end=0;
+  my $line=0;
+  my $llwe=0; # last line was empty
+  my ($ofh,$name);
+  while (<$fh>) {
+    $line++;
+    if (/^From /) {
+      if ($line==1) {
+	next;
+      }
+      else {
+	last if ($llwe); # empty line followed by ^From_ means end of mail
+      }
+    }
+    if (!defined $ofh) {
+      ($ofh,$name)= tempfile();
+      if (!$ofh) {
+	error_log("Could not create temporary file when parsing mailbox:$!");
+	return undef;
+      }
+    }
+    print $ofh $_;
+    $llwe=($_ eq "\n")?1:0;
+  }
+  close $ofh if (defined $ofh);
+  return $name;
+}
 
 sub main_multi {
   my $mailbox_file;
@@ -465,10 +539,22 @@ sub main_multi {
     # Build the list of directories where mailfiles are to be looked for
     # A directory points to a mailbox (possibly an anonymous mailbox)
     my %mailfiles_dirs;
+    my %maildirs;
+    my %spool_mboxes;
     my $dir;
     for my $m (mailboxes()) {
       $dir=getconf("mailfiles_directory", $m);
-      $mailfiles_dirs{$m}=$dir if (defined($dir));
+      if (defined $dir) {
+	$mailfiles_dirs{$m}= {type=>"dot-received", location=>$dir};
+      }
+      $dir=getconf("spool_maildir", $m);
+      if (defined $dir) {
+	$maildirs{$m} = {type=>"maildir", location=>$dir};
+      }
+      $dir=getconf("spool_mailbox", $m);
+      if (defined $dir) {
+	$spool_mboxes{$m} = {type=>"mailbox", location=>$dir, last_size=>0, last_mtime=>0};
+      }
     }
     my $in_interv=getconf("incoming_check_interval");
     my $out_interv=getconf("outgoing_check_interval");
@@ -487,6 +573,44 @@ sub main_multi {
 	$still_to_go=0;
 	for my $mbox (keys %mailfiles_dirs) {
 	  $still_to_go += import_mailfiles($mbox, $mailfiles_dirs{$mbox});
+	}
+	for my $mbox (keys %maildirs) {
+	  $still_to_go += import_mailfiles($mbox, $maildirs{$mbox});
+	}
+	for my $mbox (keys %spool_mboxes) {
+	  my $o=$spool_mboxes{$mbox};
+	  my $stmb=stat($o->{location});
+	  if ($stmb) {
+	    if ($stmb->mtime!=$o->{last_mtime} || $stmb->size!=$o->{last_size}) {
+	      $o->{last_mtime}=$stmb->mtime;
+	      $o->{last_size}=$stmb->size;
+	      my $cmd=getconf("movemail_command", $mbox);
+	      $cmd="movemail" if (!defined $cmd);
+	      my $tmpdir=getconf("tmpdir");
+	      my $dest_inbox=$tmpdir."/inbox-".$mbox;
+	      if ($cmd) {
+		$cmd="$cmd \"" . getconf("spool_mailbox", $mbox) . "\" \"$dest_inbox\"";
+		my $output=`$cmd`;
+		if (($?>>8)!=0) {
+		  error_log("movemail error: (\`$cmd\`, exit code=".($?>>8)."): $output");
+		}
+		else {
+		  my $fh;
+		  if (open($fh, $dest_inbox)) {
+		    while(1) {
+		      my ($tmpname) = extract_mbox_tmpfile(\$fh);
+		      last if (!$tmpname);
+		      my $htmp = {type=>"tempfile", location=>$tmpname};
+		      import_mailfiles($mbox, $htmp);
+		      unlink($tmpname);
+		    }
+		    close($fh);
+		    unlink($dest_inbox);
+		  }
+		}
+	      }
+	    }
+	  }
 	}
       }
       if (!$no_send) {
