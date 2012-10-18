@@ -28,9 +28,9 @@ use Encode;
 use Manitou::Encoding qw(encode_dbtxt header_decode);
 use Manitou::Log qw(error_log warning_log);
 use Manitou::Config qw(getconf);
-use Digest::SHA1;
 use IPC::Open3;
 use IO::Handle;
+use Digest::SHA;
 
 require Exporter;
 @ISA = qw(Exporter);
@@ -174,7 +174,7 @@ sub insert_attachment {
 
   if ($filesize>0) {
     # compute the fingerprint
-    my $sha1 = Digest::SHA1->new;
+    my $sha1 = Digest::SHA->new("SHA-1");
     open(PGIN, "$attch_file") or die "can not open $attch_file: $!";
     binmode PGIN;
     $sha1->addfile(*PGIN);

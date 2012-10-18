@@ -4,7 +4,7 @@
 # Copyright (C) 2004-2012 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
-# v1.3.0
+# v1.3.1
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -32,9 +32,9 @@ use DBD::Pg qw(:pg_types);
 use IO::Handle;
 use Getopt::Long;
 use Encode;
-use Digest::SHA1;
 use Socket;
 use POSIX qw(WNOHANG EWOULDBLOCK);
+use Digest::SHA;
 
 use Data::Dumper;
 use Time::HiRes qw(gettimeofday tv_interval);
@@ -45,7 +45,7 @@ use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
 use Manitou::Schema;
 use Manitou::Attachments;
 
-my $VERSION="1.3.0";
+my $VERSION="1.3.1";
 
 my $dbh;
 my $cnx_string;
@@ -706,7 +706,7 @@ sub hash_attachments {
   do {
     $dbh->begin_work;
     $sth->execute;
-    my $sha1 = Digest::SHA1->new;
+    my $sha1=Digest::SHA->new("SHA-1");
     while (my @r=$sth->fetchrow_array) {
       $sha1->reset;
       my $lobj_fd = $dbh->func ($r[1], $dbh->{pg_INV_READ}, 'lo_open');
