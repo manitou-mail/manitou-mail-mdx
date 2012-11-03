@@ -1,0 +1,2 @@
+# enable/disable manitou-mdx start at boot
+ENABLED=1

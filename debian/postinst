@@ -1,0 +1,52 @@
+#!/bin/sh -e
+. /usr/share/debconf/confmodule
+
+case "$1" in
+ configure)
+    if ! getent group manitou > /dev/null 2>&1 ; then
+      addgroup --system --quiet manitou
+    fi
+    if ! getent passwd manitou > /dev/null 2>&1 ; then
+      adduser --quiet --system --ingroup manitou \
+        --home /var/lib/manitou/ manitou
+    fi
+    chown manitou:manitou /etc/manitou-mdx.conf
+    chmod 640 /etc/manitou-mdx.conf
+    if [ ! -d /var/run/manitou ]; then
+        mkdir -m 750 /var/run/manitou
+        chown manitou:manitou /var/run/manitou
+    fi
+    db_get manitou-mdx/install-db
+    if [ "$RET" = "true" ]; then
+	if [ -z "$2" ]; then
+	    su postgres -c 'manitou-mgr --create-database' || ret=$?
+	     # if the db already exists, try to upgrade the schema
+	    if [ $ret -eq 2 ]; then
+		su manitou -c 'manitou-mgr --upgrade-schema'
+	    elif [ $ret -ne 0 ]; then
+	        # if the db creation failed, don't autostart
+	        sed -i -e 's/^ENABLED=1/ENABLED=0/' /etc/default/manitou-mdx
+	    fi
+	else
+	    su manitou -c 'manitou-mgr --upgrade-schema'
+	fi
+    else
+	sed -i -e 's/^ENABLED=1/ENABLED=0/' /etc/default/manitou-mdx
+    fi
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+db_stop
+
+exit 0

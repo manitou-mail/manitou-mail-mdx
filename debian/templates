@@ -1,0 +1,7 @@
+Template: manitou-mdx/install-db
+Type: boolean
+Description: Install the database?
+ The database can be created automatically now, or later by running manitou-mgr manually. The automatic creation assumes that PostgreSQL runs on this host and that passwordless local connections are allowed with the peer method (which is the case with a default pg_hba.conf file).
+ If this step fails, manitou-mdx will still be installed but the database will have to be created manually later and the db_connect_string section updated accordingly in /etc/manitou-mdx.conf
+Default: true
+

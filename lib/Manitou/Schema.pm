@@ -29,11 +29,11 @@ require Exporter;
 		create_table_statements create_trigger_statements);
 
 sub current_version {
-  return "1.3.0";
+  return "1.3.1";
 }
 
 sub supported_versions {
-  return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0");
+  return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0", "1.3.1");
 }
 
 my $create_script=<<EOF;
@@ -742,7 +742,7 @@ sub extract_statements {
 
 sub create_table_statements {
   my @stmt=extract_statements($create_script);
-  for my $t qw(mailing_definition mailing_run mailing_data mail_template import_mbox import_message) {
+  for my $t (qw(mailing_definition mailing_run mailing_data mail_template import_mbox import_message)) {
     push @stmt, $tables{$t};
   }
   foreach my $c (keys %object_comments) {
@@ -897,6 +897,9 @@ sub upgrade_schema_statements {
     push @stmt, $tables{"import_mbox"};
     push @stmt, $tables{"import_message"};
     push @stmt, $functions{"wordsearch"};
+  }
+  elsif ($from eq "1.3.0" && $to eq "1.3.1") {
+    # no change in schema
   }
   return @stmt;
 }

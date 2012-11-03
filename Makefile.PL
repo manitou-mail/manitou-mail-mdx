@@ -23,7 +23,6 @@ my %opts = (
 		  'MIME::Body'=> 5.0,
 		  'Mail::Address'=> 1.0,
 		  'Bit::Vector' => 6.4,
-		  'Digest::SHA1' => 2.11,
 		  'Sys::Syslog' => 0.13
 		}
 );

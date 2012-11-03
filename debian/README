@@ -1,0 +1,7 @@
+The Debian Package manitou-mdx
+----------------------------
+
+This package contains manitou-mdx, the Mail Database eXchanger daemon
+for Manitou-Mail.
+
+ -- Daniel Verite <daniel@manitou-mail.org>  Sun, 23 Sep 2012 14:01:29 +0200

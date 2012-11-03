@@ -256,7 +256,7 @@ sub create_database {
   $s2->execute();
   if ($s2->fetchrow_array) {
     print STDERR "The database $dbname already exists.\nPlease check and drop the database before attempting to recreate, or choose another database name.\n";
-    exit 1;
+    exit 2;
   }
   $s2->finish;
   $dbh1->do("CREATE DATABASE $dbname OWNER $dbuser") or die;
