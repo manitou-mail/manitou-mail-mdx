@@ -1810,12 +1810,15 @@ sub send_one_mail {
 
   attach_parts($dbh, $mail_id, $top, getconf("tmpdir"));
 
-  if (defined($outgoing_plugins{$from})) {
+  my @opl;
+  @opl=@{$outgoing_plugins{$from}} if (defined $outgoing_plugins{$from});
+  push @opl, @{$outgoing_plugins{"common"}} if (defined $outgoing_plugins{"common"});
+  if (@opl) {
     my %pl_ctxt = (stage => "outgoing",
 		   mimeobj => $top,
 		   mail_id => $mail_id,
 		   dbh => $dbh);
-    for my $plugin (@{$outgoing_plugins{$from}}) {
+    for my $plugin (@opl) {
       $plugin->process(\%pl_ctxt);
     }
   }
@@ -1978,7 +1981,7 @@ sub init_plugins {
 		die "maintenance_plugins: unrecognized frequency at start of declaration.\nAccepted syntax is Xmn or Xh where X is a number, or HH:MM, or *:MM.\nExamples:\nmaintenance_plugins = 2h plugin1 \\\n 10mn plugin2 \\\n 07:00 plugin3\n";
 	      }
 	    }
-	    elsif ($mbox eq "common") {
+	    elsif ($mbox eq "common" && $pl_type ne "outgoing_plugins") {
 	      die "Configuration error: $pl_type are only allowed in mailboxes sections, not in the [common] section\n";
 	    }
 
