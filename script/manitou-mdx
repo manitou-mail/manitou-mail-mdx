@@ -289,6 +289,12 @@ sub import_mailfiles {
 	    error_log("Failed to delete file $proc_filename: $!");
 	  }
 	}
+	if ($ret>0 && $origin->{type} eq "dot-received" &&
+	    getconf_bool("delete_processed_mail_files"), $mbox) {
+	  if (!unlink($done)) {
+	    error_log("Failed to delete file $done: $!");
+	  }
+	}
       }
     }
 
