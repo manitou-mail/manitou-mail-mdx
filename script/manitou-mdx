@@ -49,7 +49,7 @@ use File::stat;
 use IO::Handle;
 use IPC::Open3;
 use Getopt::Long;
-use File::Temp qw(tempfile);
+use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname);
 use Time::HiRes qw(gettimeofday tv_interval);
 
@@ -76,7 +76,6 @@ my $dbh;
 my $global_end;
 my $mail_id;			# currently processed
 my $verbosity;
-
 
 # hash of mail_id that we failed to send and do not want to retry
 my %hsend_blocked;
@@ -910,23 +909,28 @@ sub run_maint_plugin {
 
 sub init_temp_dir {
   my $dir = getconf('tmpdir');
-  if (!defined($dir)) {
-    $dir="/var/tmp/manitou-" . getuid();
+  if (defined $dir) {
+    if (! -d $dir) {
+      mkdir($dir, 0700) or die "Cannot create $dir: $!\nPlease set the 'tmpdir' configuration parameter to a usable directory for temporary files";
+    }
+    my $st=stat($dir);
+    if (($st->mode & 7) != 0) {
+      die "Security check failed: $dir has unsecure permissions: use 0700 permissions.\n" unless (getconf('security_checks') eq "no");
+    }
+    if ($st->uid != getuid()) {
+      my @pw_me=getpwuid(getuid());
+      my @pw_dir=getpwuid($st->uid);
+      my $msg=sprintf("Security problem: $dir belongs to user '%s' while we are running as user '%s'\n", $pw_dir[0], $pw_me[0]);
+      die $msg unless (getconf('security_checks') eq "no");
+    }
   }
-  if (! -d $dir) {
-    mkdir($dir, 0700) or die "Cannot create $dir: $!\nPlease set the 'tmpdir' configuration parameter to a usable directory for temporary files";
+  else {
+    $dir=File::Temp::tempdir(CLEANUP=>1);
+    if (!$dir) {
+      die "Could not create a temporary directory";
+    }
+    set_common_conf('tmpdir', $dir);
   }
-  my $st=stat($dir);
-  if (($st->mode & 7) != 0) {
-    die "Security check failed: $dir has unsecure permissions: use 0700 permissions.\n" unless (getconf('security_checks') eq "no");
-  }
-  if ($st->uid != getuid()) {
-    my @pw_me=getpwuid(getuid());
-    my @pw_dir=getpwuid($st->uid);
-    my $msg=sprintf("Security problem: $dir belongs to user '%s' while we are running as user '%s'\n", $pw_dir[0], $pw_me[0]);
-    die $msg unless (getconf('security_checks') eq "no");
-  }
-  set_common_conf('tmpdir', $dir);
 }
 
 sub LogError {
