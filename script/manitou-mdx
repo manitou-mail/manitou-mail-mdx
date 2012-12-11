@@ -51,8 +51,9 @@ use IPC::Open3;
 use Getopt::Long;
 use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname);
+use Fcntl qw(:seek);
 use Time::HiRes qw(gettimeofday tv_interval);
-
+use IO::Uncompress::Gunzip qw(gunzip $GunzipError) ;
 
 use Manitou::Filters;
 use Manitou::Jobs;
@@ -219,7 +220,8 @@ sub import_mailfiles {
 	$preproc_plugin->process(\%plugins_ctxt);
       }
       my %ctxt;
-      if (open(MAIL_FILE, $proc_filename)) {
+      my $fh;
+      if (open($fh, $proc_filename)) {
 	$ctxt{'filename'} = $fname;
 	$ctxt{'filesize'} = $st->size;
 	$ctxt{'proc_filename'} = $proc_filename;
@@ -230,8 +232,8 @@ sub import_mailfiles {
 	if ($plugins_ctxt{'status'}) {
 	  $ctxt{'status'}=$plugins_ctxt{'status'};
 	}
-	$ret = import_message($mbox, \*MAIL_FILE, \%ctxt);
-	close(MAIL_FILE);
+	$ret = import_message($mbox, $fh, \%ctxt);
+	close($fh);
       }
       else {
 	$ret=0;
@@ -289,7 +291,7 @@ sub import_mailfiles {
 	  }
 	}
 	if ($ret>0 && $origin->{type} eq "dot-received" &&
-	    getconf_bool("delete_processed_mail_files"), $mbox) {
+	    getconf_bool("delete_processed_mail_files", $mbox)) {
 	  if (!unlink($done)) {
 	    error_log("Failed to delete file $done: $!");
 	  }
@@ -503,15 +505,15 @@ sub main_multi {
     print "\n" if ($mail_cnt>$mbox_skip);
   }
   elsif (@ARGV) {
-    for (my $nb=0; $nb<@ARGV; $nb++) {
-      my $st=stat($ARGV[$nb]) or die $ARGV[$nb].": $!";
-      my $str_file_date=strftime ("%Y-%m-%d %H:%M:%S",
-				  localtime ($st->mtime));
-      open(MAIL_FILE, $ARGV[$nb]) or die $ARGV[$nb].": $!\n";
+    foreach my $fname (@ARGV) {
+      my $st=stat($fname) or die "$fname: $!";
+      my $str_file_date=strftime("%Y-%m-%d %H:%M:%S", localtime($st->mtime));
+      my $fh;
+      open($fh, $fname) or die "$fname: $!\n";
       my %ctxt;
-      $ctxt{'filename'}=$ARGV[$nb];
+      $ctxt{'filename'}=$fname;
       $ctxt{'filesize'} = $st->size;
-      $ctxt{'proc_filename'}=$ARGV[$nb];
+      $ctxt{'proc_filename'}=$fname;
       $ctxt{'str_date'}=$str_file_date;
       if ($global_tag ne "") {
 	push @{$ctxt{'tags'}}, $global_tag;
@@ -520,8 +522,8 @@ sub main_multi {
       if ($l) {
 	push @{$ctxt{tags}}, @{$l};
       }
-      import_message($global_mbox, \*MAIL_FILE, \%ctxt);
-      close(MAIL_FILE);
+      import_message($global_mbox, $fh, \%ctxt);
+      close($fh);
     }
   }
   else {
@@ -1049,7 +1051,7 @@ sub import_message_2 {
   my ($mail_filename, $mail_str_date)=($mail_ctxt->{'filename'}, $mail_ctxt->{'str_date'});
   my ($head, $body_text, $body_html, $top, $attachments);
   my $parser = new MIME::Parser;
-
+  my $gzfh; # handle for Gunzip
   my $failed=0;
   $mail_id=0;
 
@@ -1059,14 +1061,24 @@ sub import_message_2 {
   $parser->output_to_core(20000);
   $parser->parse_nested_messages(0);
 
-  # Put the whole message into the $top object
-  $top = $parser->read($mail_handle);
+  # check if it'gzip'ed
+  my $header2;
+  my $rd2=read($mail_handle, $header2, 2);
+  seek $mail_handle, 0, SEEK_SET;
+  if ($rd2==2 && $header2 eq "\x1f\x8b") {
+    my $gzfh=new IO::Uncompress::Gunzip $mail_handle
+      or die "IO::Uncompress::Gunzip failed: $GunzipError";
+    $top = $parser->read($gzfh);
+  }
+  else {
+    $top = $parser->read($mail_handle);
+  }
 
-  # Header handling
   # Discard the mail if it can't be parsed
-  if ( !$top ) {
-      LogError("Malformed mail message");
-      return 0;
+  if (!$top) {
+    error_log("Malformed mail message");
+    close $gzfh if (defined $gzfh);
+    return 0;
   }
 #  $top->head->unfold;
 
@@ -1248,6 +1260,7 @@ sub import_message_2 {
   }
   $dbh->commit;
   $top->purge;
+  close $gzfh if (defined $gzfh);
   return $mail_id;
 }
 

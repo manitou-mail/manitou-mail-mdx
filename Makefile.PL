@@ -13,6 +13,7 @@ my %opts = (
    EXE_FILES => [ qw(script/manitou-mdx script/manitou-mgr script/manitou-spool) ],
    PREREQ_PM => { 'Getopt::Long' => 2.00,
 		  'IO' => 0,
+		  'IO::Uncompress::Gunzip' => 2.012,
 		  'DBI' => 1.32,
 		  'DBD::Pg' => 1.30,
 		  'HTML::TreeBuilder' => 3.23,
