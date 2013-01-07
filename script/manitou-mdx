@@ -1570,6 +1570,7 @@ sub apply_filters {
   my %actions;
   my %all_exprs;
   my $final_action;
+  my @sorted_keys; # list of expr_id sorted by apply_order
   my $sth = $dbh->prepare("SELECT expr_id,name,expression,direction FROM filter_expr ORDER BY apply_order");
   $sth->execute;
   while (my @r=$sth->fetchrow_array) {
@@ -1579,6 +1580,7 @@ sub apply_filters {
     $h{expr}=decode_dbtxt($r[2]);
     $h{direction}=$r[3];
     $exprs{$r[0]}=\%h;
+    push @sorted_keys, $r[0];
     $all_exprs{$h{name}}=\%h;
   }
   $sth->finish;
@@ -1590,7 +1592,7 @@ sub apply_filters {
   $sth->finish;
   my $stop_filters = 0;
 
-  for my $n (sort keys %exprs) {
+  for my $n (@sorted_keys) {
     last if ($stop_filters);
     my $e=$exprs{$n};
     if (defined $actions{$n} && ($e->{direction} eq "B" || $e->{direction} eq $direction)) {
