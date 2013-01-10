@@ -329,50 +329,60 @@ sub upgrade_schema {
   }
 
   my @supported = Manitou::Schema::supported_versions();
-  if (! grep( {$_ eq $db_version} @supported)) {
+
+  my ($current_index) = grep {$supported[$_] eq $db_version } 0..$#supported;
+
+  if (!defined $current_index) {
     print STDERR "Error; version $db_version not supported by manitou-mdx automatic upgrade: the database schema needs to be upgraded manually.\n";
     exit 1;
   }
 
-  my $db_current = Manitou::Schema::current_version();
-  if ($db_version eq $db_current) {
+  my $db_latest = Manitou::Schema::current_version();
+  if ($db_version eq $db_latest) {
     print "Database $db_name is already at version $db_version\n" unless ($opt_quiet);
     return 1;
   }
-  print "Upgrading $db_name from $db_version to $db_current\n" unless ($opt_quiet);
-  my @stmt = Manitou::Schema::upgrade_schema_statements($dbh, $db_version, $db_current);
-  eval {
-    foreach (@stmt) {
+
+  for my $idx ($current_index+1..$#supported) {
+    $db_version = $supported[$idx-1];
+    my $db_current = $supported[$idx];
+
+    print "Upgrading $db_name from $db_version to $db_current\n" unless ($opt_quiet);
+    my @stmt = Manitou::Schema::upgrade_schema_statements($dbh, $db_version, $db_current);
+    eval {
+      foreach (@stmt) {
+	if ($opt_dry_run) {
+	  print "$_;\n";
+	}
+	else {
+	  $dbh->do($_);
+	}
+      }
+    };
+    if ($@) {
+      print STDERR $@;
+      $dbh->rollback;
+      print STDERR "Schema upgrade aborted and rolled back due to failure (see errors above). Upgrade the schema manually (see documentation) or fix the problem and retry.\n";
+      exit 1;
+    }
+    if ($db_version ne $db_current) {
+      my $query="UPDATE runtime_info SET rt_value='$db_current' WHERE rt_key='schema_version'";
       if ($opt_dry_run) {
-	print "$_;\n";
+	print "$query;\n";
       }
       else {
-	$dbh->do($_);
+	$dbh->do($query);
       }
     }
-  };
-  if ($@) {
-    print STDERR $@;
-    $dbh->rollback;
-    print STDERR "Schema upgrade aborted and rolled back due to failure (see errors above). Upgrade the schema manually (see documentation) or fix the problem and retry.\n";
-    exit 1;
-  }
-  if ($db_version ne $db_current) {
-    my $query="UPDATE runtime_info SET rt_value='$db_current' WHERE rt_key='schema_version'";
-    if ($opt_dry_run) {
-      print "$query;\n";
+
+    if (@stmt>0) {
+      print "Schema successfully upgraded to version $db_current\n" unless ($opt_quiet);
     }
     else {
-      $dbh->do($query);
+      print "Upgraded to version $db_current with no schema change\n" unless ($opt_quiet);
     }
   }
   $dbh->commit;
-  if (@stmt>0) {
-    print "Schema successfully upgraded to version $db_current\n" unless ($opt_quiet);
-  }
-  else {
-    print "No schema change\n" unless ($opt_quiet);
-  }
   return 1;
 }
 
