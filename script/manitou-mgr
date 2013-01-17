@@ -259,7 +259,7 @@ sub create_database {
     exit 2;
   }
   $s2->finish;
-  $dbh1->do("CREATE DATABASE $dbname OWNER $dbuser") or die;
+  $dbh1->do("CREATE DATABASE $dbname OWNER $dbuser ENCODING 'UTF8'") or die;
   print "Database $dbname created.\n" unless ($opt_quiet);
   if ($dbh1->{pg_server_version}/10000 >= 9) {
     # Since Pg 9.0, each large object has it own ACL, except that lo_unlink() is ever
