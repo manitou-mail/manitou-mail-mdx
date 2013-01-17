@@ -19,6 +19,7 @@ case "$1" in
     db_get manitou-mdx/install-db
     if [ "$RET" = "true" ]; then
 	if [ -z "$2" ]; then
+	    ret=0
 	    su postgres -c 'manitou-mgr --create-database' || ret=$?
 	     # if the db already exists, try to upgrade the schema
 	    if [ $ret -eq 2 ]; then
