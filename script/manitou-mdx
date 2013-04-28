@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # manitou-mdx v-1.3.1
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2013 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -153,7 +153,7 @@ sub import_mailfiles {
     $dir=$origin->{location};
     my $dh;
     if (!opendir($dh, $dir)) {
-      error_log("Unable to opendir mailfiles_directory $dir: $!");
+      error_log("Unable to access mailfiles_directory $dir: $!");
       return 0;
     }
     @files=grep (/^mail-(\d+\-\d+\-\d+)\.received$/, readdir($dh));
@@ -163,7 +163,7 @@ sub import_mailfiles {
     $dir=$origin->{location}."/new";
     my $dh;
     if (!opendir($dh, $dir)) {
-      error_log("Unable to opendir $dir: $!");
+      error_log("Unable to access directory $dir: $!");
       return 0;
     }
     @files=grep { -f "$dir/$_" } readdir($dh);
@@ -382,12 +382,15 @@ sub main_multi {
   my $global_mbox;
   my $option_fork;
   my $option_pidfile;
+  my ($option_import_list, $option_import_basedir);
   my $mbox_skip=0;
   my $rc = GetOptions("mboxfile:s" => \$mailbox_file,
 		      "status:i", => \$options{'status'},
 		      "conf:s" => \$conf_file,
 		      "tag:s" => \$global_tag,
 		      "fork" => \$option_fork,
+		      "import-list:s" => \$option_import_list,
+		      "import-basedir:s" => \$option_import_basedir,
 		      "pidfile:s" => \$option_pidfile,
 		      "mailbox:s" => \$global_mbox,
 		      "skip:i" => \$mbox_skip,
@@ -395,6 +398,7 @@ sub main_multi {
 
   if (!$rc) {
     print STDERR "Usage: $0 [--conf=config_file] [[--mboxfile=path [--skip=# of msgs]] [--status=import_status] [--tag=tagname] ]\n";
+    print STDERR "Usage: $0 [--conf=config_file] --import-list=path [--import-basedir=directory] [--status=import_status] [--tag=tagname] [--mailbox=mailbox_name]\n";
     print STDERR "Usage: $0 [--conf=config_file] --fork [--pidfile=/path/to/pidfile]\n";
     exit 1;
   }
@@ -423,8 +427,38 @@ sub main_multi {
   # instead of forking.
   $dbh = db_connect();
 
+  init_identities();
+  init_plugins();
+  load_stopwords($dbh);
+
+  # Build the list of directories where mailfiles are to be looked for
+  # A directory points to a mailbox (possibly an anonymous mailbox)
+  my %mailfiles_dirs;
+  my %maildirs;
+  my %spool_mboxes;
+  for my $m (mailboxes()) {
+    my $dir=getconf("mailfiles_directory", $m);
+    if (defined $dir) {
+      $mailfiles_dirs{$m}= {type=>"dot-received", location=>$dir};
+    }
+    $dir=getconf("spool_maildir", $m);
+    if (defined $dir) {
+      $maildirs{$m} = {type=>"maildir", location=>$dir};
+    }
+    $dir=getconf("spool_mailbox", $m);
+    if (defined $dir) {
+      $spool_mboxes{$m} = {type=>"mailbox", location=>$dir, last_size=>0, last_mtime=>0};
+    }
+  }
+
   if ($option_fork) {
     $dbh->disconnect;
+    # Do as many error checks we can before closing stderr
+    if (!%mailfiles_dirs && !%maildirs && !%spool_mboxes) {
+      print STDERR "No mailspool defined. In daemon mode, the configuration should define spool_maildir or spool_mailbox or mailfiles_directory for at least one identity.\n";
+      exit 1;
+    }
+
     my $f=fork();
     if ($f>0) {
       if (defined $option_pidfile) {
@@ -444,11 +478,7 @@ sub main_multi {
     }
   }
 
-  init_identities();
-  init_plugins();
-  load_stopwords($dbh);
 
-#  $dbh->trace(5);
   if (defined($mailbox_file)) {
     my $mail_cnt=0;
     my $filename;
@@ -526,6 +556,39 @@ sub main_multi {
       close($fh);
     }
   }
+  elsif (defined $option_import_list) {
+    open(my $fhl, '<', $option_import_list) or die "$option_import_list: $!";
+    while (my $fname=<$fhl>) {
+      chomp $fname;
+      my $orig_fname=$fname;
+      if (defined $option_import_basedir) {
+	$fname = "$option_import_basedir/$fname";
+      }
+      my $st=stat($fname) or die "$fname: $!";
+      my $str_file_date=strftime("%Y-%m-%d %H:%M:%S", localtime($st->mtime));
+      open(my $fh, "<", $fname) or die "$fname: $!\n";
+      my %ctxt;
+      $ctxt{'filename'}=$fname;
+      $ctxt{'filesize'} = $st->size;
+      $ctxt{'proc_filename'}=$fname;
+      $ctxt{'str_date'}=$str_file_date;
+      if ($global_tag ne "") {
+	push @{$ctxt{'tags'}}, $global_tag;
+      }
+      my $l=getconf("tags_incoming", $global_mbox);
+      if ($l) {
+	push @{$ctxt{tags}}, @{$l};
+      }
+      import_message($global_mbox, $fh, \%ctxt);
+      print "$orig_fname\n" if ($verbosity);
+      close($fh);
+
+      if (Manitou::Words::queue_size() >= getconf("flush_word_index_max_queued")) {
+	do_flush_word_vectors;
+      }
+    }
+    close $fhl;
+  }
   else {
     # daemon mode
     $SIG{'TERM'} = 'sigterm';
@@ -543,26 +606,6 @@ sub main_multi {
     my $alive_interv=getconf('alive_interval');
     update_runtime_timestamp("last_alive") if ($alive_interv);
 
-    # Build the list of directories where mailfiles are to be looked for
-    # A directory points to a mailbox (possibly an anonymous mailbox)
-    my %mailfiles_dirs;
-    my %maildirs;
-    my %spool_mboxes;
-    my $dir;
-    for my $m (mailboxes()) {
-      $dir=getconf("mailfiles_directory", $m);
-      if (defined $dir) {
-	$mailfiles_dirs{$m}= {type=>"dot-received", location=>$dir};
-      }
-      $dir=getconf("spool_maildir", $m);
-      if (defined $dir) {
-	$maildirs{$m} = {type=>"maildir", location=>$dir};
-      }
-      $dir=getconf("spool_mailbox", $m);
-      if (defined $dir) {
-	$spool_mboxes{$m} = {type=>"mailbox", location=>$dir, last_size=>0, last_mtime=>0};
-      }
-    }
     my $in_interv=getconf("incoming_check_interval");
     my $out_interv=getconf("outgoing_check_interval");
     my $no_send=(getconf_bool("no_send"));
@@ -1394,7 +1437,7 @@ sub get_thread_id {
   chomp $other_mails;
   push @thread_msgs, split(/\s+/, $other_mails);
 
-  my $thread_id = get_references(\@thread_msgs) or get_sequence_nextval('seq_thread_id');
+  my $thread_id = get_references(\@thread_msgs);
   return $thread_id;
 }
 
@@ -1541,7 +1584,10 @@ sub insert_mail {
 
   $sth->bind_param(++$bp, $priority);
 
-  my $identity_id = $ctxt->{identity_id} or getconf("identity_id", $mbox_name);
+  my $identity_id = $ctxt->{identity_id};
+  if (!defined $identity_id) {
+    $identity_id=getconf("identity_id", $mbox_name);
+  }
   $sth->bind_param(++$bp, $identity_id);
 
   $sth->bind_param(++$bp, $ctxt->{filesize});
@@ -2033,7 +2079,7 @@ sub init_plugins {
 	      $evplugin = "Manitou::Plugins::$plugin" . '::init($dbh)';
 	    }
 	    my $pl=eval $evplugin;
-	    if ($@ or !defined($pl)) {
+	    if ($@ || !defined($pl)) {
 	      print STDERR "Error in initializing plugin $plugin for mailbox $mbox: $@\n";
 	      exit 1;
 	    }
@@ -2091,6 +2137,7 @@ __END__
 
   manitou-mdx [--conf=/path/to/config] [--fork] [--pidfile=/path/to/pidfile]
   manitou-mdx [--conf=/path/to/config] --mboxfile=/path/to/mbox [--status=status] [--tag=tag] [--mailbox=mailbox] [--skip=number] [-v]
+  manitou-mdx [--conf=/path/to/config] --import-list=path [--import-basedir=directory] [--status=import_status] [--tag=tagname] [--mailbox=mailbox_name];
 
 =head1 DESCRIPTION
 
@@ -2118,6 +2165,9 @@ When invoked without argument or with --fork, run continuously to import into th
 
 =item B<mailbox>:
  When importing a mailbox, assign the imported messages to the specified mailbox. The mailbox name is generally a destination email address.
+
+=item B<import-list>:
+ Import mail files that are listed in the file, one line per file name. When specified, --import-basedir is a directory name that is prepended to all file names read from this file.
 
 =back
 
