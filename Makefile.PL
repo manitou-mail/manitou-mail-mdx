@@ -45,10 +45,10 @@ sub MY::install {
 sub MY::postamble {
   # Install our minimal configuration file
   return<<'EOF';
-CONFDIR=$(DESTDIR)/etc
+CONFDIR=$(PREFIX)/share/manitou-mdx
 conf__install:
-	-$(MKPATH) $(CONFDIR)
-	$(CP) etc/manitou-mdx.conf $(CONFDIR)/manitou-mdx.conf
+	-$(MKPATH) $(DESTDIR)$(CONFDIR)
+	$(CP) etc/manitou-mdx.conf $(DESTDIR)$(CONFDIR)/manitou-mdx.conf.sample
 EOF
 }
 

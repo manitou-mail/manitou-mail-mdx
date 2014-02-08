@@ -8,10 +8,10 @@ case "$1" in
     fi
     if ! getent passwd manitou > /dev/null 2>&1 ; then
       adduser --quiet --system --ingroup manitou \
-        --home /var/lib/manitou/ --shell /bin/sh manitou
+        --home /var/lib/manitou --shell /bin/sh manitou
     fi
-    chown manitou:manitou /etc/manitou-mdx.conf
-    chmod 640 /etc/manitou-mdx.conf
+    install -m 640 -g manitou -o manitou -T \
+	/usr/share/manitou-mdx/manitou-mdx.conf.sample /etc/manitou-mdx.conf
     if [ ! -d /var/run/manitou ]; then
         mkdir -m 750 /var/run/manitou
         chown manitou:manitou /var/run/manitou
