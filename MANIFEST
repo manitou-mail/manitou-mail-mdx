@@ -28,5 +28,6 @@ lib/Manitou/Plugins/html_indexer.pm
 lib/Manitou/Plugins/trashcan_purge.pm
 lib/Manitou/Plugins/spam_learner.pm
 lib/Manitou/Plugins/pdfindexer.pm
+lib/Manitou/Plugins/no_duplicate.pm
 etc/manitou-mdx.conf
 Makefile.PL
