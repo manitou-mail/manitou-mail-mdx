@@ -142,10 +142,24 @@ sub update_note {
   $sthu->finish;
 }
 
+sub files_size {
+  my $top=shift;
+  my $sum=0;
+  foreach my $p ($top->parts) {
+    if (defined($p->head->recommended_filename)) {
+      $p->sync_headers({Length=>'COMPUTE'});
+      $sum += $p->head->get("Content-Length");
+    }
+  }
+  return $sum;
+}
+
 sub process {
   my ($self,$ctxt)=@_;
   my $top=$ctxt->{mimeobj};
-  if ($top->is_multipart) {
+  # Upload files only if the total size of named parts is greater than
+  # the max size
+  if ($top->is_multipart && files_size($top)>=$self->{args}->{maxsize}) {
     my @keep;
     my @urls;
 
@@ -156,13 +170,10 @@ sub process {
 
     foreach my $p ($top->parts) {
       if (defined($p->head->recommended_filename)) {
-	$p->sync_headers({Length=>'COMPUTE'});
-	if ($p->head->get("Content-Length")>=$self->{args}->{maxsize}) {
-	  my $url=upload($self, $p, \%plctxt);
-	  if (defined($url)) {
-	    push @urls, $url;
-	    next;		# don't keep that part
-	  }
+	my $url=upload($self, $p, \%plctxt);
+	if (defined $url) {
+	  push @urls, $url;
+	  next;		# don't keep that part
 	}
       }
       push @keep, $p;		# keep unchanged parts
