@@ -41,10 +41,18 @@ if [ "$ENABLED" = "0" ]; then
     exit 0
 fi
 
+check_run_dir() {
+  if [ ! -d /var/run/manitou ]; then
+    mkdir -m 755 /var/run/manitou
+    chown manitou:manitou /var/run/manitou
+  fi
+}
+
 ret=0
 case "$1" in
   start)
 	log_daemon_msg "Starting $DESC" "$NAME"
+	check_run_dir
 	if start-stop-daemon --start --oknodo --quiet \
 		--pidfile $PIDFILE --chuid $DUID --name $NAME \
 		--startas $DAEMON -- $MANITOU_MDX_OPTS

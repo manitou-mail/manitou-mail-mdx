@@ -10,12 +10,6 @@ case "$1" in
       adduser --quiet --system --ingroup manitou \
         --home /var/lib/manitou --shell /bin/sh manitou
     fi
-    install -m 640 -g manitou -o manitou -T \
-	/usr/share/manitou-mdx/manitou-mdx.conf.sample /etc/manitou-mdx.conf
-    if [ ! -d /var/run/manitou ]; then
-        mkdir -m 750 /var/run/manitou
-        chown manitou:manitou /var/run/manitou
-    fi
     db_get manitou-mdx/install-db
     if [ "$RET" = "true" ]; then
 	if [ -z "$2" ]; then
