@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2014 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -41,6 +41,21 @@ sub merge_fields {
   my $txt=$template_txt;
   for my $k (keys %{$p_values}) {
     $txt =~ s/\Q{{$k}}\E/$$p_values{$k}/g;
+  }
+  return $txt;
+}
+
+# Newlines in header fields are filtered out since it's
+# the separator between headers for MailFormat::encode_header
+sub merge_fields_header {
+  my ($template_txt, $p_values) = @_;
+  my $txt=$template_txt;
+  for my $k (keys %{$p_values}) {
+    my $v = $$p_values{$k};
+    $v =~ s/\r\n/\n/g;
+    $v =~ s/\r/\n/g;
+    $v =~ s/\n/ /g;
+    $txt =~ s/\Q{{$k}}\E/$v/g;
   }
   return $txt;
 }
@@ -215,7 +230,7 @@ sub do_mailing {
       my $fields_values = $csvp->fetchrow_hash();
       $text_body = merge_fields($text_template, $fields_values);
       $html_body = merge_fields($html_template, $fields_values);
-      $header = merge_fields($header_template, $fields_values);
+      $header = merge_fields_header($header_template, $fields_values);
       unlink($filename);
     }
     else {
