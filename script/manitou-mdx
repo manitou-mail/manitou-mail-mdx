@@ -34,7 +34,6 @@
 use strict;
 
 use Encode;
-
 use DBI;
 use DBD::Pg;
 use MIME::Head;
@@ -48,6 +47,7 @@ use POSIX qw(strftime mktime tmpnam getuid);
 use File::stat;
 use IO::Handle;
 use IPC::Open3;
+use URI::Escape;
 use Getopt::Long;
 use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename dirname);
@@ -140,6 +140,26 @@ sub do_flush_word_vectors {
   print "done\n" if ($verbosity);
 }
 
+sub list_pretagged_files {
+  my $spooldir=$_[0];
+  my @dirs=readdir($_[1]);
+  my %tags;
+  for my $d (@dirs) {
+    next if ($d eq "." || $d eq "..");
+    my $t=uri_unescape($d);
+    $t=Encode::decode("utf-8", $t, Encode::FB_PERLQQ);
+    $t =~ s/\//->/g;
+    if (opendir(my $dh, $spooldir."/".$d)) {
+      my @files=grep (/^mail-(\d+\-\d+\-\d+)\.received$/, readdir($dh));
+      foreach (@files) {
+	$tags{$d."/".$_} = $t;
+      }
+      closedir $dh;
+    }
+  }
+  return %tags;
+}
+
 # mbox: identity from the configuration file
 # origin: {type=>tempfile|dot-received|maildir , location=>'/some/path' }
 sub import_mailfiles {
@@ -148,6 +168,7 @@ sub import_mailfiles {
 
   my @files;
   my $dir;
+  my %pretagged_files;
 
   if ($origin->{type} eq "dot-received") {
     $dir=$origin->{location};
@@ -156,7 +177,14 @@ sub import_mailfiles {
       error_log("Unable to access mailfiles_directory $dir: $!");
       return 0;
     }
-    @files=grep (/^mail-(\d+\-\d+\-\d+)\.received$/, readdir($dh));
+
+    if (getconf("mailfiles_directory_flattened_folders", $mbox)) {
+      %pretagged_files = list_pretagged_files($dir, $dh);
+      @files = keys %pretagged_files;
+    }
+    else {
+      @files=grep (/^mail-(\d+\-\d+\-\d+)\.received$/, readdir($dh));
+    }
     closedir $dh;
   }
   elsif ($origin->{type} eq "maildir") {
@@ -178,13 +206,12 @@ sub import_mailfiles {
   }
 
   my $import_count=0;
-  foreach my $fname (sort @files) {
+  foreach my $rel_fname (sort @files) {
     # we don't want to import too much files in one go to avoid
     # having maintenance plugins and the sending of outgoing mail
     # being delayed
     last if ($global_end || $import_count>=20);
-
-    $fname = "$dir/$fname";
+    my $fname = "$dir/$rel_fname";
     my $st=stat($fname);
     my $proc_filename = $fname;
     my $basename = $fname;
@@ -204,8 +231,7 @@ sub import_mailfiles {
       my $t0 = [gettimeofday];
 
       $import_count++;
-      my $str_file_date=strftime("%Y-%m-%d %H:%M:%S",
-				 localtime ($st->mtime));
+      my $str_file_date=strftime("%Y-%m-%d %H:%M:%S", localtime ($st->mtime));
       my %plugins_ctxt;
       $plugins_ctxt{filename}=$proc_filename;
       $plugins_ctxt{filesize} = $st->size;
@@ -216,6 +242,10 @@ sub import_mailfiles {
       $plugins_ctxt{error_log} = \&error_log;
 
       my $l=getconf("tags_incoming", $mbox);
+      @{$plugins_ctxt{tags}}=@{$l} if ($l);
+      if (exists $pretagged_files{$rel_fname}) {
+	push @{$plugins_ctxt{tags}}, $pretagged_files{$rel_fname};
+      }
       @{$plugins_ctxt{tags}}=@{$l} if ($l);
       for my $preproc_plugin (@{$preprocess_plugins{$mbox}}) {
 	$preproc_plugin->process(\%plugins_ctxt);

@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2014 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -79,6 +79,7 @@ my %conf_opts =
    'local_delivery_agent' => 'program',
    'log_filter_hits' => 'bool',
    'mailfiles_directory' => 'directory',
+   'mailfiles_directory_flattened_folders' => 'bool',
    'maintenance_plugins' => 'strings',
    'no_send' => 'bool',
    'outgoing_bcc' => 'email',
