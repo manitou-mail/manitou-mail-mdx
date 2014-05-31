@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # manitou-mgr
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2014 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 # v1.3.1
@@ -132,7 +132,7 @@ if ($opt_action{"version"}) {
   exit(0);
 }
 
-if (!defined $conf_file && -r "/etc/manitou-mdx.conf") {
+if (!defined $conf_file && -e "/etc/manitou-mdx.conf") {
   $conf_file="/etc/manitou-mdx.conf"; # default config file
 }
 if (defined $conf_file) {
