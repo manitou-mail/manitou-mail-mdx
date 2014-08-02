@@ -225,7 +225,7 @@ sub add_mbox {
 
 sub get_identity_id {
   my ($dbh,$email)=@_;
-  if (exists $mbox_conf{$email}) {
+  if (exists $mbox_conf{$email}->{identity_id}) {
     return $mbox_conf{$email}->{identity_id};
   }
   else {
