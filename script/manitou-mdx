@@ -447,7 +447,6 @@ sub main_multi {
   init_log();
   init_temp_dir();
 
-
   if (defined $global_mbox && $global_mbox ne "") {
     # let init_mailboxes create the mailbox if necessary
     add_mbox($global_mbox);
@@ -506,6 +505,8 @@ sub main_multi {
       open(STDERR, ">/dev/null");
       # reconnect
       $dbh = db_connect();
+      # reinit temp dir since the previous one may have been removed
+      init_temp_dir();
     }
   }
 
