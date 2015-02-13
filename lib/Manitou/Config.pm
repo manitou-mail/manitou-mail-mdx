@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2014 Daniel Verite
+# Copyright (C) 2004-2015 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -33,6 +33,7 @@ my %default_conf =
   (
    'auto_db_reconnect' => 'yes',
    'alive_interval' => 60, # seconds
+   'apply_filters' => 'yes',
    'body_format_flowed' => 'yes',
    'delete_processed_mail_files' => "no",
    'detach_text_plain' => "yes",
@@ -50,7 +51,9 @@ my %default_conf =
    'security_checks' => "yes",
    'store_filenames' => "yes",
    'no_send' => "no",
-   'store_raw_mail' => "no"
+   'store_raw_mail' => "no",
+   'update_addresses_last' => 'yes',
+   'update_runtime_info' => 'yes',
   );
 
 # 'strings' as argument type implies a multiline declaration:
@@ -59,6 +62,7 @@ my %default_conf =
 my %conf_opts =
   (
    'alive_interval' => 'integer',
+   'apply_filters' => 'bool',
    'auto_db_reconnect' => 'bool',
    'body_format_flowed' => 'bool',
    'db_connect_string' => 'string',
@@ -95,7 +99,9 @@ my %conf_opts =
    'store_filenames' => 'bool',
    'store_raw_mail' => 'bool',
    'tags_incoming' => 'strings',
-   'tmpdir' => 'directory'
+   'tmpdir' => 'directory',
+   'update_addresses_last' => 'bool',
+   'update_runtime_info' => 'bool',
   );
 
 sub mbox_exists {

@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # manitou-mdx v-1.3.1
-# Copyright (C) 2004-2014 Daniel Verite
+# Copyright (C) 2004-2015 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -162,6 +162,7 @@ sub list_pretagged_files {
 
 # mbox: identity from the configuration file
 # origin: {type=>tempfile|dot-received|maildir , location=>'/some/path' }
+# Not used for --import-list or --mboxfile
 sub import_mailfiles {
   my ($mbox, $origin)=@_;
   my ($done, $ret);
@@ -188,7 +189,7 @@ sub import_mailfiles {
     closedir $dh;
   }
   elsif ($origin->{type} eq "maildir") {
-    $dir=$origin->{location}."/new";
+    $dir=$origin->{location};
     my $dh;
     if (!opendir($dh, $dir)) {
       error_log("Unable to access directory $dir: $!");
@@ -263,6 +264,7 @@ sub import_mailfiles {
 	if ($plugins_ctxt{'status'}) {
 	  $ctxt{'status'}=$plugins_ctxt{'status'};
 	}
+	$ctxt{'skip_filters'}=1 if !getconf_bool("apply_filters", $mbox);
 	$ret = import_message($mbox, $fh, \%ctxt);
 	close($fh);
       }
@@ -296,12 +298,14 @@ sub import_mailfiles {
 	  }
 	  my $msg=sprintf("Imported: %s in %0.2fs", $fname, tv_interval($t0));
 	  notice_log($msg);
-	  update_runtime_timestamp("last_import");
+	  update_runtime_timestamp("last_import") if getconf_bool("update_runtime_info", $mbox);
 	}
 	elsif ($ret==0) {
 	  error_log("Import failed: $fname");
-	  update_runtime_timestamp("last_error");
-	  update_runtime_errcount();
+	  if (getconf_bool("update_runtime_info", $mbox)) {
+	      update_runtime_timestamp("last_error");
+	      update_runtime_errcount();
+	  }
 	}
 	elsif ($ret==-1) {
 	  error_log("Discarded: $fname");
@@ -540,6 +544,7 @@ sub main_multi {
 	  if ($global_tag ne "") {
 	    push @{$ctxt{'tags'}}, $global_tag;
 	  }
+	  $ctxt{'skip_filters'}=1 if !getconf_bool("apply_filters", $global_mbox);
 	  import_message($global_mbox, \*MAIL_FILE, \%ctxt);
 	  close(MAIL_FILE);
 	  unlink($filename);
@@ -584,6 +589,7 @@ sub main_multi {
       if ($l) {
 	push @{$ctxt{tags}}, @{$l};
       }
+      $ctxt{'skip_filters'}=1 if !getconf_bool("apply_filters", $global_mbox);
       import_message($global_mbox, $fh, \%ctxt);
       close($fh);
     }
@@ -611,12 +617,18 @@ sub main_multi {
       if ($l) {
 	push @{$ctxt{tags}}, @{$l};
       }
+      $ctxt{'skip_filters'}=1 if !getconf_bool("apply_filters", $global_mbox);
       import_message($global_mbox, $fh, \%ctxt);
       print "$orig_fname\n" if ($verbosity);
       close($fh);
 
       if (Manitou::Words::queue_size() >= getconf("flush_word_index_max_queued")) {
 	do_flush_word_vectors;
+      }
+      if (getconf_bool("delete_processed_mail_files", $global_mbox)) {
+	if (!unlink($fname)) {
+	  error_log("Failed to delete file $fname: $!");
+	}
       }
     }
     close $fhl;
@@ -636,13 +648,14 @@ sub main_multi {
     $mail_id=0;
     my $last_alive;
     my $alive_interv=getconf('alive_interval');
-    update_runtime_timestamp("last_alive") if ($alive_interv);
+    update_runtime_timestamp("last_alive") if ($alive_interv && getconf_bool("update_runtime_info"));
 
     my $in_interv=getconf("incoming_check_interval");
     my $out_interv=getconf("outgoing_check_interval");
     my $no_send=(getconf_bool("no_send"));
     my $still_to_go;
 
+    my $last_checked_jobs=0;
     # Start by sending any pending outgoing mail
     my $last_checked_outgoing=time;
     send_mails() unless $no_send;
@@ -657,7 +670,11 @@ sub main_multi {
 	  $still_to_go += import_mailfiles($mbox, $mailfiles_dirs{$mbox});
 	}
 	for my $mbox (keys %maildirs) {
-	  $still_to_go += import_mailfiles($mbox, $maildirs{$mbox});
+	  # In this context (importing files as they appear, as opposed to an archive)
+	  # we consider only new/, not cur/
+	  my $origin = {type=>"maildir",
+			location=>$maildirs{$mbox}->{location}."/new"};
+	  $still_to_go += import_mailfiles($mbox, $origin);
 	}
 	for my $mbox (keys %spool_mboxes) {
 	  my $o=$spool_mboxes{$mbox};
@@ -695,6 +712,7 @@ sub main_multi {
 	  }
 	}
       }
+
       if (!$no_send) {
 	# send
 	if (time >= $last_checked_outgoing+$out_interv) {
@@ -708,14 +726,26 @@ sub main_multi {
       else {
 	$last_checked_outgoing=time;
       }
-      if ($alive_interv && time >= $last_alive+$alive_interv) {
-	# confirm that we're running
-	$last_alive = update_runtime_timestamp("last_alive");
+
+      my $t=time;
+      if (getconf_bool("update_runtime_info")) {
+	if ($alive_interv && $t>=$last_alive+$alive_interv) {
+	  # confirm that we're running
+	  update_runtime_timestamp("last_alive");
+	  # refresh $t too since the above update may have been locked during some time
+	  $t = $last_alive = time;
+	}
+      }
+
+      Manitou::Jobs::check_end_jobs($dbh);
+      if ($last_checked_jobs+5 < $t) {
+	$last_checked_jobs = $t;
+        Manitou::Jobs::process_jobs_queue($dbh);
+        check_new_jobs();
       }
 
       # compute the minimum lapse of time before we'll need to
       # do something, and then sleep that amount of time
-      my $t=time;
       my ($mplugin,$maint_when) = check_maintenance_schedule($t);
 
       while ($maint_when && $maint_when<=$t) {
@@ -737,11 +767,9 @@ sub main_multi {
 	  $nx_act=min($nx_act, $when_widx);
 	}
       }
-      Manitou::Jobs::check_end_jobs($dbh);
-      Manitou::Jobs::process_jobs_queue($dbh);
-      check_new_jobs();
 
       # sleep unless there's something better to do right now
+      $t=time;
       if (!($nx_act<=$t || $still_to_go>0)) {
 	my $bits;
 	vec($bits, $dbh->{pg_socket}, 1)=1;
@@ -1202,7 +1230,7 @@ sub import_message_2 {
   $mail_ctxt->{mailbox_address} = $mbox_name;
 
   my $action;
-  $action = apply_filters($mail_ctxt, $top, \$body_text, 'I') unless ($mail_ctxt->{skip_filters});
+  $action = apply_filters($mail_ctxt, $top, \$body_text, 'I') unless $mail_ctxt->{skip_filters};
 
   if ($action ne "discard") {
 
@@ -1416,8 +1444,15 @@ sub store_raw_mail {
 }
 
 sub insert_addresses {
-  my ($mail,$mail_id)=@_;
+  my ($mail,$mail_id,$mbox_name)=@_;
   my @haddr;
+
+  # Normally we update addresses.{last_recv_from,nb_recv_from} on each mail,
+  # but when mass-importing it's a locking hot spot, so it may be configured
+  # to off.
+  # Additionally, adresses.last_recv_from is uninteresting in a mass-import
+  # scenario.
+  my $do_update_addr_last = getconf_bool("update_addresses_last", $mbox_name);
 
   my $sth = $dbh->prepare("SELECT addr_id,recv_pri FROM addresses WHERE email_addr=?") or die $dbh->errstr;
 
@@ -1444,7 +1479,7 @@ sub insert_addresses {
 	    or die $sth_insert_ad->errstr;
 	}
 	# update addresses.last_recv_from
-	if ($adrtype eq "From") {
+	if ($adrtype eq "From" && $do_update_addr_last) {
 	  my $sth_upd = $dbh->prepare("UPDATE addresses SET last_recv_from=now(),nb_recv_from=1+coalesce(nb_recv_from,0) WHERE addr_id=?");
 	  $sth_upd->execute ($id);
 	}
@@ -1568,7 +1603,7 @@ sub insert_mail {
   # flags
   $sth->bind_param (++$bp, $attachments>0?1:0);
 
-  my $haddr=insert_addresses($mailobj,$mail_id);
+  my $haddr=insert_addresses($mailobj, $mail_id, $mbox_name);
 
   $priority = $ctxt->{priority};
   # Adds the (optional) priorities of From addresses
@@ -1959,12 +1994,14 @@ sub send_one_mail {
   $fctxt{mail_id}=$mail_id;
   $fctxt{tags}=();
   $fctxt{priority}=undef;
-  my $faction = apply_filters(\%fctxt, $top, \$db_body, "O");
-  # Apply filter actions to the database
-  for my $tag (@{$fctxt{'tags'}}) {
-    Manitou::Tags::insert_tag($dbh, $mail_id, $tag);
+  if (getconf_bool("apply_filters", $from)) {
+      my $faction = apply_filters(\%fctxt, $top, \$db_body, "O");
+      # Apply filter actions to the database
+      for my $tag (@{$fctxt{'tags'}}) {
+	  Manitou::Tags::insert_tag($dbh, $mail_id, $tag);
+      }
+      # TODO: other filter actions (status, priority)
   }
-  # TODO: other filter actions (status, priority)
 
   # Pipe the message to the delivery agent
   my $ret=0;
@@ -2011,12 +2048,12 @@ sub send_mails {
   while (@res = $sth1->fetchrow_array) {
     my $mail_id=$res[0];
     next if (exists $hsend_blocked{$mail_id});
-    my $sth = $dbh->prepare ("SELECT sender,subject FROM mail WHERE mail_id=? AND status=129");
+    my $sth = $dbh->prepare("SELECT sender,subject FROM mail WHERE mail_id=? AND status=129");
     $sth->execute($mail_id);
     my @row;
     while (@row = $sth->fetchrow_array) {
       if (send_one_mail($row[0], $row[1], $mail_id)) {
-	update_runtime_timestamp("last_sent");
+	update_runtime_timestamp("last_sent") if getconf_bool("update_runtime_info", $row[0]);
 	notice_log("Sent outgoing message #$mail_id");
 	my $nb_blocked = scalar (keys %hsend_blocked);
 	if ($nb_blocked>0) {
