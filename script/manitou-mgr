@@ -72,6 +72,7 @@ my $opt_reindex_step;
 my $opt_reindex_begin;
 my $opt_reindex_end;
 my $opt_reindex_parts;
+my $opt_reindex_initial_state;
 my $opt_reindex_jobs;
 #my $opt_search_terms;
 
@@ -87,7 +88,7 @@ sub usage {
   $0 --merge-attachments $p
   $0 --print-size $p
   $0 --clear-full-text-index $p
-  $0 --reindex-full-text [--reindex-partitions=first[-last]] [--reindex-jobs=jobs] $p
+  $0 --reindex-full-text [--reindex-partitions=first[-last]] [--reindex-initial-state=empty] [--reindex-jobs=jobs] $p
 ~;
 };
 
@@ -114,6 +115,7 @@ my $rc = GetOptions("conf:s" => \$conf_file,
 		    "hash-attachments" => \$opt_action{'hash-attachments'},
 		    "reindex-full-text" => \$opt_action{'reindex-words'},
 		    "reindex-partitions=s" => \$opt_reindex_parts,
+		    "reindex-initial-state=s" => \$opt_reindex_initial_state,
 		    "reindex-jobs=i" => \$opt_reindex_jobs,
 		    "clear-full-text-index" => \$opt_action{'clear-word-index'}
 		   );
@@ -171,6 +173,12 @@ elsif ($opt_action{"reindex-words"}) {
   my %optr;
   $optr{'parts'}=$opt_reindex_parts if ($opt_reindex_parts ne "");
   $optr{'jobs'}=$opt_reindex_jobs if ($opt_reindex_jobs);
+  if ($opt_reindex_initial_state) {
+    if ($opt_reindex_initial_state ne "empty") {
+      die "Invalid value for reindex-initial-state option. Only 'empty' is supported.";
+    }
+    $optr{'initial_state'}=$opt_reindex_initial_state;
+  }
   reindex_words($dbh,\%optr);
   $dbh->disconnect;
 }
@@ -424,24 +432,30 @@ sub parent_command {
 
 sub parallel_reindex_parts {
   my $dbh=shift;
+  my $opt_reindex=shift;  # keys: initial_state
   my $jobs=shift;
   my @parts=@_;
 
   my @childs;
   $dbh->{AutoCommit}=1;
-  my $partsize = Manitou::Words::load_partsize($dbh);
+  my $fti_conf=Manitou::Words::load_fti_config($dbh);
+  my $partsize = $fti_conf->{partsize};
 
   my $parent_end=0;
   my %hwords; # Words are in utf-8 in %hwords, contrary to Manitou::Words::index_words
-  my $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?");
-  my $sth_n = $dbh->prepare("INSERT INTO words(word_id,wordtext) VALUES (nextval('seq_word_id'),?) RETURNING word_id");
+  my $sth_w;
+  my $sth_n;
+  if (!$fti_conf->{words_partitioning}) {
+    $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?");
+    $sth_n = $dbh->prepare("INSERT INTO words(word_id,wordtext) VALUES (nextval('seq_word_id'),?) RETURNING word_id");
+  }
 
   $dbh->begin_work;
 
   while (@parts>0 || @childs>0) {
     if (@childs<$jobs && @parts>0) {
       my $i=shift @parts;
-      push @childs, spawn_reindex_job($partsize*$i, $partsize*($i+1)-1, $i);
+      push @childs, spawn_reindex_job($opt_reindex, $partsize*$i, $partsize*($i+1)-1, $i);
     }
 
     my $pid;
@@ -499,14 +513,29 @@ sub parallel_reindex_parts {
 	    #child $c->{part_no} queries for the word '$w'\n";
 	    my $id=$hwords{$w};
 	    if (!defined $id) {
-	      $sth_w->execute($w);
+	      if (!$fti_conf->{words_partitioning}) {
+		$sth_w->execute($w);
+	      }
+	      else {
+		my $words_table = Manitou::Words::words_table_name($w);
+		$sth_w = $dbh->prepare("SELECT word_id FROM $words_table WHERE wordtext=?",
+				       {pg_server_prepare=>0});
+		$sth_w->execute($w);
+	      }
 	      ($id)=$sth_w->fetchrow_array;
 	      if ($id) {
 		$hwords{$w}=$id;
 	      }
 	      else {
 		# insert it
-		$sth_n->execute($w);
+		if (!$fti_conf->{words_partitioning}) {
+		  $sth_n->execute($w);
+		}
+		else {
+		  my $words_table = Manitou::Words::words_table_name($w);
+		  $sth_n = $dbh->prepare("INSERT INTO $words_table(word_id,wordtext) VALUES (nextval('seq_word_id'),?) RETURNING word_id", {pg_server_prepare=>0});
+		  $sth_n->execute($w);
+		}
 		($id) = $sth_n->fetchrow_array;
 		$hwords{$w}=$id if ($id);
 		die "Unable to get word_id of inserted word\n" if (!$id);
@@ -553,7 +582,9 @@ sub child_reindex_words {
   load_stopwords($dbh);
   my $col_html = getconf_bool("index_words_html_parts") ? "bodyhtml":"null";
   my $where;
-  my $partsize = Manitou::Words::load_partsize($dbh);
+  my $fti_conf=Manitou::Words::load_fti_config($dbh);
+  my $partsize = $fti_conf->{partsize};
+
   my $min_id = $opt->{begin} ? int($opt->{begin}):0;
   my $next_min_id = $min_id;
   my $sthb = $dbh->prepare("SELECT bodytext,$col_html FROM body where mail_id=?");
@@ -562,7 +593,7 @@ sub child_reindex_words {
   my %extractors = Manitou::Attachments::text_extractors();
   my $idx_html = getconf_bool("index_words_html_parts");
   my ($mail_id,$sender);
-  my %ctxt = (fh=>$opt->{fh});
+  my %ctxt = (fh=>$opt->{fh}, init_empty=>$opt->{init_empty});
 
   while (!$end) {
     $dbh->begin_work;
@@ -645,7 +676,7 @@ sub child_reindex_words {
 
 sub reindex_words {
   my ($dbh,$opt)=@_;
-  my $partsize = Manitou::Words::load_partsize($dbh);
+  my $partsize = Manitou::Words::load_fti_config($dbh);
   my @parts;
 
   my $p=$opt->{parts};
@@ -676,12 +707,12 @@ sub reindex_words {
   }
 
   $dbh->{InactiveDestroy}=1;
-  parallel_reindex_parts($dbh, defined $opt->{jobs}?$opt->{jobs}:1, @parts);
+  parallel_reindex_parts($dbh, $opt, defined $opt->{jobs}?$opt->{jobs}:1, @parts);
 }
 
 # Spawn a child with parent-child communication through sockets
 sub spawn_reindex_job {
-  my ($id1,$id2,$part_no)=@_;
+  my ($opt_reindex, $id1,$id2,$part_no)=@_;
   my %r;
   my ($fhc,$fhp);
 
@@ -702,6 +733,9 @@ sub spawn_reindex_job {
     close $fhc;
     $0 = "mail-reindex#$part_no";
     my %ctxt = (fh=>$fhp, begin=>$id1, end=>$id2, part_no=>$part_no);
+    if ($opt_reindex->{initial_state} eq "empty") {
+      $ctxt{'init_empty'}=1;
+    }
     child_reindex(getconf("db_connect_string"), \%ctxt);
     close $fhp;
     exit(0);

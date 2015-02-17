@@ -25,7 +25,7 @@ use Carp;
 require Exporter;
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(load_stopwords index_words flush_word_vectors clear_word_vectors
-		queue_size last_flush_time search load_partsize);
+		queue_size last_flush_time search load_fti_config words_table_name);
 
 use DBD::Pg qw(:pg_types);
 use Time::HiRes qw(gettimeofday tv_interval);
@@ -51,8 +51,18 @@ our $vecs_estim_size;		# estimated size in bytes
 
 my %no_index_words;
 
+# Configuration of the full-text index, to be loaded from the database
+# Currently used as a flag 
+my $fti_config;
+
 # The size of partitions.
 my $partsize;
+
+# Optional partitioning of 'words' table
+# Supported values:
+# 0: none
+# 1: 28 tables based on 1st character, 26 for a..z + 1 for digits + 1 for others
+my $words_partitioning_mode;
 
 # When $unaccent is true, we index only the unaccented form of words.
 # This allows for accent-insensitive search.
@@ -78,14 +88,26 @@ sub queue_size {
   return scalar(@flush_queue);
 }
 
-sub load_partsize {
+sub load_fti_config {
   my $dbh=shift;
-  my $s=$dbh->prepare("SELECT rt_value FROM runtime_info WHERE rt_key='word_index_partsize'");
+  my $s=$dbh->prepare(qq{SELECT rt_key, rt_value FROM runtime_info
+        WHERE rt_key IN ('word_index_partsize','words_partitioning')});
   $s->execute;
-  ($partsize) = $s->fetchrow_array;
+  $words_partitioning_mode = 0;
+  $partsize=undef;
+  while (my ($k,$v) = $s->fetchrow_array) {
+    if ($k eq "word_index_partsize") {
+      $partsize=$v;
+    }
+    elsif ($k eq "words_partitioning") {
+      $words_partitioning_mode = 1;
+    }
+  }
+  $fti_config = 1;
+
   # If no 'word_index_partsize' entry, we assume a default value, but 
   # only if nothing has been indexed yet
-  if ($s->rows==0) {
+  if (!$partsize) {
     $s=$dbh->prepare("SELECT word_id FROM inverted_word_index LIMIT 1");
     $s->execute;
     if ($s->rows!=0) {
@@ -94,7 +116,7 @@ sub load_partsize {
     $partsize=16384;		# default value
     $dbh->do("INSERT INTO runtime_info(rt_key,rt_value) VALUES('word_index_partsize','16384')");
   }
-  return $partsize;
+  return {"partsize"=>$partsize, "words_partitioning"=>$words_partitioning_mode};
 }
 
 sub get_accents_conf {
@@ -223,7 +245,7 @@ sub clear_word_vectors {
 # from table inverted_word_index referencing table words.
 sub clear_last_indexed_mail {
   my ($dbh,$mail_id)=@_;
-  load_partsize($dbh) if !defined($partsize);
+  load_fti_config($dbh) if !defined($fti_config);
   my $part_no = $mail_id / $partsize;
   my $bit_id = ($mail_id-1) % $partsize;
 
@@ -335,15 +357,39 @@ sub extract_words {
   }
 }
 
+sub words_table_name {
+  my $c1=substr($_[0],0,1);
+  my $c = ord($c1);
+  if ($c>=97 && $c<=122) {
+    return "words_$c1";
+  }
+  elsif ($c>=48 && $c<=57) {
+    return "words_09";
+  }
+  else {
+    return "words2";
+  }
+}
 
 sub index_words {
   my ($dbh, $mail_id, $pbody, $pheader, $ref_more_text, $isub, $ctxt)=@_;
-  load_partsize($dbh) if !defined($partsize);
+  load_fti_config($dbh) if !defined($fti_config);
   get_accents_conf() if (!$accents_configured);
 
   my $cnt=0;
-  my $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?");
-  my $sth_n = $dbh->prepare("INSERT INTO words(word_id,wordtext) VALUES (nextval('seq_word_id'),?) RETURNING word_id");
+  my $sth_w;
+  my $sth_n;
+
+  # The caller may tell us through $ctxt->{init_empty} that the partition
+  # in inverted_word_index is empty. In this case, we don't SELECT from it.
+  # This is a significant optimization when mass-reindexing.
+  my $part_is_empty = $ctxt->{init_empty};
+
+  if (!$words_partitioning_mode) {
+    $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?");
+    $sth_n = $dbh->prepare("INSERT INTO words(word_id,wordtext) VALUES (nextval('seq_word_id'),?) RETURNING word_id");
+  }
+
   my $svec = $dbh->prepare("SELECT mailvec,nz_offset FROM inverted_word_index WHERE word_id=? AND part_no=?");
 
   my @words;
@@ -364,25 +410,48 @@ sub index_words {
     if (!defined $word_id) {
       # The word hasn't been encountered before in any mail
       my $se=encode_dbtxt($s);
+      my @r;
 
-      if (defined $isub) {
-	$word_id = $isub->($se, $ctxt);	
-	if (!$word_id) {
-	  die "Failed to obtain a word_id for '$se' from external function";
-	}
-	$hwords{$s}=$word_id;
+      if ($words_partitioning_mode) {
+	my $words_table = words_table_name($se);
+	# TODO: cache one prepared plan per $table
+	$sth_w = $dbh->prepare("SELECT word_id FROM $words_table WHERE wordtext=?", {pg_server_prepare=>0});
+	$sth_w->execute($se);
+	@r=$sth_w->fetchrow_array;
       }
       else {
 	$sth_w->execute($se);
-	my @r=$sth_w->fetchrow_array;
-	if (@r) {
-	  $word_id=$r[0];
+	@r=$sth_w->fetchrow_array;
+      }
+
+      if (@r) {
+	$word_id=$r[0];
+	$hwords{$s}=$word_id;
+      }
+      else {
+	if (defined $isub) {
+	  # The word isn't in the words table and we want it from our parent
+	  $word_id = $isub->($se, $ctxt);	
+	  if (!$word_id) {
+	    die "Failed to obtain a word_id for '$se' from external function";
+	  }
 	  $hwords{$s}=$word_id;
 	}
 	else {
-	  # The word isn't in the words table: let's insert it
-	  $sth_n->execute($se);
-	  ($word_id) = $sth_n->fetchrow_array;
+	  # The word isn't in the words table and we want to insert it directly
+	  if ($words_partitioning_mode) {
+	    my $words_table = words_table_name($se);
+	    $sth_n = $dbh->prepare("INSERT INTO $words_table(word_id,wordtext) VALUES (nextval('seq_word_id'),?) RETURNING word_id", {pg_server_prepare=>0});
+	    $sth_n->execute($se);
+	    ($word_id) = $sth_n->fetchrow_array;
+	  }
+	  else {
+	    $sth_n->execute($se);
+	    ($word_id) = $sth_n->fetchrow_array;
+	  }
+	  if (!$word_id) {
+	    die "Failed to obtain a word_id for '$se' from database";
+	  }
 	  $hwords{$s}=$word_id;
 	}
       }
@@ -394,8 +463,8 @@ sub index_words {
     my $vec = $vecs{$word_id}->{$part_no}->{v};
 
     if (!defined $vec) {
-      $svec->execute($word_id, $part_no);
-      if ($svec->rows>0) {
+      $svec->execute($word_id, $part_no) unless $part_is_empty;
+      if (!$part_is_empty && $svec->rows>0) {
 	# found in db
 	my @r=$svec->fetchrow_array;
 	my $bits = "\000"x$r[1] . $r[0];
@@ -483,7 +552,7 @@ sub and_lists {
 
 sub search {
   my $dbh=shift;
-  load_partsize($dbh) if !defined($partsize);
+  load_fti_config($dbh) if !defined($fti_config);
   my ($nb_substrings, $nb_words);
   my $sth_w = $dbh->prepare("SELECT word_id FROM words WHERE wordtext=?");
   my $svec = $dbh->prepare("SELECT mailvec,part_no,nz_offset FROM inverted_word_index WHERE word_id=?");
