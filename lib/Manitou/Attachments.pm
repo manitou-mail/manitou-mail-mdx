@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2015 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -180,7 +180,7 @@ sub insert_attachment {
     $sha1->addfile(*PGIN);
     my $fingerprint = $sha1->b64digest;
     # check if the content already exists in the database
-    my $sth1=$dbh->prepare("SELECT content FROM attachment_contents WHERE fingerprint=?");
+    my $sth1=$dbh->prepare("SELECT content FROM attachment_contents WHERE fingerprint=? LIMIT 1");
     $sth1->execute($fingerprint) or die $sth1->errstr;
     ($lobjId)=$sth1->fetchrow_array;
     $sth1->finish;
