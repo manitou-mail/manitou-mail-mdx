@@ -51,6 +51,9 @@ our $vecs_estim_size;		# estimated size in bytes
 
 my %no_index_words;
 
+# Prepared statement handles to lookup words when partitioning is on.
+my %cache_sth_w;
+
 # Configuration of the full-text index, to be loaded from the database
 # Currently used as a flag 
 my $fti_config;
@@ -234,6 +237,7 @@ sub clear_word_vectors {
   %vecs=();
   %hwords=();
   $vecs_estim_size=0;
+  %cache_sth_w=();
 }
 
 # Clear the bits corresponding to a mail_id in the inverted word
@@ -418,8 +422,11 @@ sub index_words {
 
       if ($words_partitioning_mode) {
 	my $words_table = words_table_name($se);
-	# TODO: cache one prepared plan per $table
-	$sth_w = $dbh->prepare("SELECT word_id FROM $words_table WHERE wordtext=?", {pg_server_prepare=>0});
+	$sth_w = $cache_sth_w{$words_table};
+	if (!defined $sth_w) {
+	  $sth_w = $dbh->prepare("SELECT word_id FROM $words_table WHERE wordtext=?");
+	  $cache_sth_w{$words_table} = $sth_w;
+	}
 	$sth_w->execute($se);
 	@r=$sth_w->fetchrow_array;
       }
