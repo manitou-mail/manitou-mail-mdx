@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2015 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -271,62 +271,66 @@ sub clear_last_indexed_mail {
 sub extract_words {
   my ($ptext, $tb)=@_;
   my %seen;
-  foreach (split(/[\x{0}-\x{1e}\x{80}-\x{bf}\s+,\.\(\)\\<\>\{\}\x{2013}\x{2019}\x{201c}\x{201d}\"'`:;\/!\[\]\?=*\|]/o, $$ptext)) {
-    next if (/^[-_#%|*=]+$/);  # skip horizontal separation lines
-    if (/^[-~*_^|_=]+(.*)$/) {
-      $_ = $1;
-    }
-    if (/^([^-~*^|_=]+)[-~*^|_=]+$/) {
-      $_ = $1;
-    }
+  foreach (split(/\n/, $$ptext)) {
+    next if (length($_)>50 && !/[\s:\.\?,;]/);
 
-    next if (length($_)<=2 || length($_)>50);
-    $_=lc($_);
-    next if (exists $seen{$_});
-    $seen{$_}=1;
-    next if (exists $no_index_words{$_});
+    foreach (split(/[\x{0}-\x{1e}\x{80}-\x{bf}\s+,\.\(\)\\<\>\{\}\x{2013}\x{2019}\x{201c}\x{201d}\"'`:;\/!\[\]\?=*\|]/o)) {
+      next if (/^[-_#%|*=]+$/);  # skip horizontal separation lines
+      if (/^[-~*_^|_=]+(.*)$/) {
+	$_ = $1;
+      }
+      if (/^([^-~*^|_=]+)[-~*^|_=]+$/) {
+	$_ = $1;
+      }
 
-    if ($unaccent && ! /^[0-9_a-z]+$/) {
-      my $w=NFD($_);
-      $w =~ s/\pM//g;  # strip combining characters
-      if ($w ne $_) {
-	if (!exists $seen{$w} && !exists $no_index_words{$w}) {
-	  # push the non-accented version
-	  push @{$tb}, $w;
-	  $seen{$w}=1;
+      next if (length($_)<=2 || length($_)>50);
+      $_=lc($_);
+      next if (exists $seen{$_});
+      $seen{$_}=1;
+      next if (exists $no_index_words{$_});
+
+      if ($unaccent && ! /^[0-9_a-z]+$/) {
+	my $w=NFD($_);
+	$w =~ s/\pM//g;  # strip combining characters
+	if ($w ne $_) {
+	  if (!exists $seen{$w} && !exists $no_index_words{$w}) {
+	    # push the non-accented version
+	    push @{$tb}, $w;
+	    $seen{$w}=1;
+	  }
+	  push @{$tb}, $_ if ($add_unaccent);
 	}
-	push @{$tb}, $_ if ($add_unaccent);
+	else {
+	  push @{$tb}, $_;
+	}
       }
       else {
 	push @{$tb}, $_;
       }
-    }
-    else {
-      push @{$tb}, $_;
-    }
-    # Add components of compound words
-    my @cw=split /-/;
-    if (@cw>1) {
-      foreach (@cw) {
-	next if (length($_)<=2 || length($_)>50);
-	next if (exists $seen{$_});
-	$seen{$_}=1;
-	next if (exists $no_index_words{$_});
-	if ($unaccent && ! /^[0-9_a-z]+$/) {
-	  my $w=NFD($_);
-	  $w =~ s/\pM//g;	# strip combining characters
-	  if ($w ne $_) {
-	    if (!exists $seen{$w} && !exists $no_index_words{$w}) {
-	      # push the non-accented version
-	      push @{$tb}, $w;
-	      $seen{$w}=1;
+      # Add components of compound words
+      my @cw=split /-/;
+      if (@cw>1) {
+	foreach (@cw) {
+	  next if (length($_)<=2 || length($_)>50);
+	  next if (exists $seen{$_});
+	  $seen{$_}=1;
+	  next if (exists $no_index_words{$_});
+	  if ($unaccent && ! /^[0-9_a-z]+$/) {
+	    my $w=NFD($_);
+	    $w =~ s/\pM//g;	# strip combining characters
+	    if ($w ne $_) {
+	      if (!exists $seen{$w} && !exists $no_index_words{$w}) {
+		# push the non-accented version
+		push @{$tb}, $w;
+		$seen{$w}=1;
+	      }
+	      push @{$tb}, $_ if ($add_unaccent);
+	    } else {
+	      push @{$tb}, $_;
 	    }
-	    push @{$tb}, $_ if ($add_unaccent);
 	  } else {
 	    push @{$tb}, $_;
 	  }
-	} else {
-	  push @{$tb}, $_;
 	}
       }
     }
