@@ -48,6 +48,7 @@ sub get_db_encoding {
 # Convert from perl internal format to a chain of bytes suitable for
 # the current db encoding
 sub encode_dbtxt {
+  return undef if (!length($_[0]));
   return Encode::encode("utf8", $_[0], Encode::FB_PERLQQ);
 }
 

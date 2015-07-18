@@ -161,13 +161,25 @@ sub insert_attachment {
   $fname=sanitize_filename(substr($fname,0,300));
   $stha->bind_param(++$pos, encode_dbtxt($fname));
 
-  my $charset=header_decode($mime_obj->head->mime_attr("content-type.charset"));
-  $stha->bind_param(++$pos, encode_dbtxt(substr($charset,0,30)));
+  my $ctch=$mime_obj->head->mime_attr("content-type.charset");
+  if (defined $ctch) {
+    my $charset = substr(header_decode($ctch),0,30);
+    $stha->bind_param(++$pos, $charset);
+  }
+  else {
+    $stha->bind_param(++$pos, undef);
+  }
+  
 
   my $content_id=$mime_obj->get("Content-ID");
-  # content-ID syntax must be <addr-spec> (RFC2111)
-  $content_id = ($content_id =~ /^\<(.*)\>$/) ? $1 : undef;
-  $stha->bind_param(++$pos, encode_dbtxt(header_decode($content_id)));
+  if (defined $content_id) {
+    # content-ID syntax must be <addr-spec> (RFC2111)
+    $content_id = ($content_id =~ /^\<(.*)\>$/) ? $1 : undef;
+    $stha->bind_param(++$pos, encode_dbtxt(header_decode($content_id)));
+  }
+  else {
+    $stha->bind_param(++$pos, undef);
+  }
 
   $stha->execute or die $stha->errstr;
   $stha->finish;
