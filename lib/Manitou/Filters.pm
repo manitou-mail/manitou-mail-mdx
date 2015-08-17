@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2015 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -387,7 +387,7 @@ sub skip_blanks {
   do {
     $c=substr($ctxt->{expr}, $p, 1);
     $p++;
-  } while ($c eq " " || $c eq "\t");
+  } while ($c eq " " || $c eq "\t" || $c eq "\n" || $c eq "\r");
   $ctxt->{evp}=$p-1;
 }
 
