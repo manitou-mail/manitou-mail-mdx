@@ -102,16 +102,31 @@ sub add_date_header {
 }
 
 sub encode_text_body {
-  my $db_body=shift;
+  my $body=shift;
   my @charsets = @_;
 
-  my $body;
+  my $sep2="\n";
+  local $Text::Wrap::separator2 = "\n";
+  local $Text::Wrap::columns = 78;
+  local $Text::Wrap::huge = 'overflow';
+  my @paragraphs = split(/\n/, $body);
+  $body="";
+  foreach (@paragraphs) {
+    if (length($_)>1 && substr($_,0,1) ne ">") { # don't wrap quoted contents
+      $body .= wrap('', '', $_) . "\n";
+    }
+    else {
+      $body .= "$_\n";
+    }
+  }
+
   # try the different charsets in the order of their declaration and
   # keep the one with which encode() produces no error
+  my $enc_body;
   my $body_charset;
   foreach (@charsets) {
     eval {
-      $body = Encode::encode($_, $db_body, Encode::FB_CROAK|Encode::LEAVE_SRC);
+      $enc_body = Encode::encode($_, $body, Encode::FB_CROAK|Encode::LEAVE_SRC);
     };
     if (!$@) {
       $body_charset=$_;
@@ -123,25 +138,7 @@ sub encode_text_body {
     die "Unable to encode body of outgoing mail with any of the specifieds charset (See 'preferred_charset' configuration parameter)";
   }
 
-  my $format_flowed;
-  my $sep2="\n";
-#  if (getconf_bool("body_format_flowed", $mbox)) {
-#    $format_flowed = "; format=flowed";
-#    $sep2 = " \n";
-#  }
-  local $Text::Wrap::separator2=$sep2;
-  local $Text::Wrap::columns=78;
-  my @paragraphs = split(/\n/, $body);
-  $body="";
-  foreach (@paragraphs) {
-    if (substr($_,0,1) ne ">") { # don't wrap quoted contents
-      $body .= wrap('', '', $_) . "\n";
-    }
-    else {
-      $body .= "$_\n";
-    }
-  }
-  return ($body, $body_charset);
+  return ($enc_body, $body_charset);
 }
 
 
