@@ -83,6 +83,8 @@ sub usage {
   $0 --version
   $0 --create-database [--db-name=db] [--db-user=user] [--db-super-user=superuser] [--db-super-password=passwd] [--db-host=dbhost] [--db-port=dbport] $p
   $0 --create-schema [--db-name=db] [--db-user=user] [--db-host=dbhost] [--db-port=dbport] [--dry-run] [--quiet] $p
+  $0 --do-partition-words
+  $0 --undo-partition-words
   $0 --upgrade-schema [--dry-run] [--quiet] $p
   $0 --hash-attachments $p
   $0 --merge-attachments $p
@@ -117,7 +119,9 @@ my $rc = GetOptions("conf:s" => \$conf_file,
 		    "reindex-partitions=s" => \$opt_reindex_parts,
 		    "reindex-initial-state=s" => \$opt_reindex_initial_state,
 		    "reindex-jobs=i" => \$opt_reindex_jobs,
-		    "clear-full-text-index" => \$opt_action{'clear-word-index'}
+		    "clear-full-text-index" => \$opt_action{'clear-word-index'},
+		    "do-partition-words" => \$opt_action{'do-partition-words'},
+		    "undo-partition-words" => \$opt_action{'undo-partition-words'},
 		   );
 
 if (!$rc) {
@@ -167,6 +171,16 @@ elsif ($opt_action{"upgrade-schema"}) {
 }
 elsif ($opt_action{"create-database"}) {
   create_database();
+}
+elsif ($opt_action{"do-partition-words"}) {
+  Connect();
+  my $fti_conf=Manitou::Words::load_fti_config($dbh);
+  Manitou::Schema::partition_words($dbh, $fti_conf, 1, $opt_dry_run);
+}
+elsif ($opt_action{"undo-partition-words"}) {
+  Connect();
+  my $fti_conf=Manitou::Words::load_fti_config($dbh);
+  Manitou::Schema::partition_words($dbh, $fti_conf, 0, $opt_dry_run);
 }
 elsif ($opt_action{"reindex-words"}) {
   Connect();

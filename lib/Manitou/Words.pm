@@ -102,7 +102,7 @@ sub load_fti_config {
     if ($k eq "word_index_partsize") {
       $partsize=$v;
     }
-    elsif ($k eq "words_partitioning") {
+    elsif ($k eq "words_partitioning" && $v eq "1") {
       $words_partitioning_mode = 1;
     }
   }

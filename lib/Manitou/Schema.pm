@@ -26,7 +26,8 @@ require Exporter;
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(current_version supported_versions upgrade_schema_statements
 		create_data_statements create_function_statements
-		create_table_statements create_trigger_statements);
+		create_table_statements create_trigger_statements
+		partition_words);
 
 sub current_version {
   return "1.3.1";
@@ -902,6 +903,76 @@ sub upgrade_schema_statements {
     # no change in schema
   }
   return @stmt;
+}
+
+sub upsert_runtime_info {
+  my ($dbh, $name, $value) = @_;
+  # $dbh->do("LOCK TABLE runtime_info IN EXCLUSIVE MODE");
+  my $r=$dbh->do("UPDATE runtime_info SET rt_value=? WHERE rt_key=?", undef, $value, $name);
+  if ($r eq "0E0") { # zero row affected
+    $dbh->do("INSERT INTO runtime_info VALUES(rt_key,rt_value) VALUES(?,?)", undef, $name, $value);
+  }
+}
+
+sub do_or_print {
+  my ($dry_run, $dbh, $query)=@_;
+  if ($dry_run) {
+    print "$query;\n";
+    return "0E0";
+  }
+  else {
+    return $dbh->do($query);
+  }
+}
+
+sub partition_words {
+  my ($dbh, $fti_conf, $on, $dry_run) = @_;
+  if ($on && $fti_conf->{words_partitioning}) {
+    die "Words partitioning is already in effect according to runtime_info.";
+  }
+  if (!$on && !$fti_conf->{words_partitioning}) {
+    die "Words partitioning is not in effect according to runtime_info.";
+  }
+  if ($on) {
+    my @parts;
+    $dbh->begin_work;
+    foreach my $c ('a'..'z') {
+      my $q1 = "create table words_$c as select * from words where substr(wordtext,1,1)='$c'";
+      do_or_print($dry_run, $dbh, $q1);
+      push @parts, "words_$c";
+      my $q2 = "create unique index words_${c}_idx on words_$c(wordtext)";
+      do_or_print($dry_run, $dbh, $q2);
+    }
+
+    do_or_print($dry_run, $dbh, "CREATE TABLE words_09 AS select * from words where ascii(substr(wordtext,1,1)) between ascii('0') and ascii('9')");
+      push @parts, "words_09";
+
+    do_or_print($dry_run, $dbh, "CREATE TABLE words2 AS select * from words where not (ascii(substr(wordtext,1,1)) between ascii('a') and ascii('z')) and not (ascii(substr(wordtext,1,1)) between ascii('0') and ascii('9'))");
+    push @parts, "words2";
+
+    my @select_parts = map { " SELECT * FROM $_" } @parts;
+    my $create_view = "CREATE VIEW words AS \n" . join(" UNION ALL\n", @select_parts);
+    do_or_print($dry_run, $dbh, "DROP TABLE words");
+    do_or_print($dry_run, $dbh, $create_view);
+
+    upsert_runtime_info($dbh, "words_partitioning", "1") unless($dry_run);
+    $dbh->commit;
+  }
+  else {
+    $dbh->begin_work;
+    my $table_name = "words_tmp_" . int(rand(100000));
+    do_or_print($dry_run, $dbh, "CREATE TABLE $table_name AS select * from words");
+    do_or_print($dry_run, $dbh, "DROP VIEW words");
+    do_or_print($dry_run, $dbh, "ALTER TABLE $table_name RENAME TO words");
+    foreach my $c ('a'..'z') {
+      do_or_print($dry_run, $dbh, "DROP TABLE words_$c");
+    }
+    do_or_print($dry_run, $dbh, "DROP TABLE words_09");
+    do_or_print($dry_run, $dbh, "DROP TABLE words2");
+
+    upsert_runtime_info($dbh, "words_partitioning", "0") unless($dry_run);
+    $dbh->commit;
+  }
 }
 
 1;
