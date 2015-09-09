@@ -93,7 +93,7 @@ my %options;
 
 
 # header -> mail_addresses.addr_type
-my %hAdrTypes=( "From" => 1,
+my %AddrTypes=( "From" => 1,
 		"To" => 2,
 		"Cc" => 3,
 		"ReplyTo" => 4,
@@ -1456,42 +1456,51 @@ sub insert_addresses {
 
   my $sth = $dbh->prepare("SELECT addr_id,recv_pri FROM addresses WHERE email_addr=?") or die $dbh->errstr;
 
-  my $sth_insert_ad = $dbh->prepare("INSERT INTO addresses(addr_id,email_addr,name) VALUES (?,?,?)") or die $dbh->errstr;
+  my $sth_insert_ad = $dbh->prepare("INSERT INTO addresses(addr_id,email_addr,name) VALUES(nextval('seq_addr_id'),?,?) RETURNING addr_id") or die $dbh->errstr;
 
-  for my $adrtype (keys %hAdrTypes) {
+  # Collect all addresses, for all address types (from,to,cc...)
+  for my $addrtype (keys %AddrTypes) {
     my @addrs;
+    my $pos=0;  # relative to each addrtype
     eval {
       no warnings 'all';
-      @addrs=Mail::Address->parse(header_decode($mail->head->get($adrtype)));
+      @addrs=Mail::Address->parse(header_decode($mail->head->get($addrtype)));
     };
-    for my $a (@addrs) {
-      my $pos=0;
-      if ($a->address) {
-	my $la=lc($a->address);
-	my $ln=lc($a->name);
-	$sth->execute($la) or die $sth->errstr;
-	my ($id,$addr_pri)=$sth->fetchrow_array;
-	if (!$id) {
-	  $id=get_sequence_nextval("seq_addr_id");
-	  $sth_insert_ad->execute($id,
-				  substr($la,0,300),
-				  substr($ln,0,300))
-	    or die $sth_insert_ad->errstr;
-	}
-	# update addresses.last_recv_from
-	if ($adrtype eq "From" && $do_update_addr_last) {
-	  my $sth_upd = $dbh->prepare("UPDATE addresses SET last_recv_from=now(),nb_recv_from=1+coalesce(nb_recv_from,0) WHERE addr_id=?");
-	  $sth_upd->execute ($id);
-	}
-	push @haddr, { "email"=>$a->address,
-		       "addr_id"=>$id,
-		       "pos"=>$pos,
-		       "prio"=>$addr_pri,
-		       "type"=> $hAdrTypes{$adrtype} };
 
+    for my $a (@addrs) {
+      if ($a->address) {
+	push @haddr, {
+	  "email" => lc($a->address),
+	  "name" => $a->name,
+	  "addr_id" => undef,
+	  "pos" => $pos<32767 ? $pos : 32767,
+	  "prio" => 0,
+	  "type" => $AddrTypes{$addrtype}
+	};
+	$pos++;
       }
     }
   }
+
+  # Insert the addresses following the alphabetical order of email to suppress the risk
+  # of deadlocks with other parallel inserts
+  for my $addr (sort { $a->{email} cmp $b->{email} } @haddr) {
+    $sth->execute($addr->{email});
+    my ($id,$addr_pri) = $sth->fetchrow_array;
+    if (!$id) {
+      $sth_insert_ad->execute(substr($addr->{email},0,300),
+			      substr($addr->{name},0,300));
+      ($id) = $sth_insert_ad->fetchrow_array;
+    }
+    $addr->{addr_id} = $id;
+    $addr->{prio} = $addr_pri;
+    # update addresses.last_recv_from
+    if ($addr->{type}==1 && $do_update_addr_last) {
+      $dbh->do("UPDATE addresses SET last_recv_from=now(),nb_recv_from=1+coalesce(nb_recv_from,0) WHERE addr_id=?", undef, $addr->{addr_id});
+    }
+
+  }
+
   return \@haddr;
 }
 
@@ -1608,7 +1617,7 @@ sub insert_mail {
   $priority = $ctxt->{priority};
   # Adds the (optional) priorities of From addresses
   foreach (@$haddr) {
-    $priority += $_->{prio} if (defined $_->{prio} && $_->{type} eq $hAdrTypes{"From"});
+    $priority += $_->{prio} if (defined $_->{prio} && $_->{type} eq $AddrTypes{"From"});
   }
 
   my $msg_id=$mailobj->head->get('Message-Id');
