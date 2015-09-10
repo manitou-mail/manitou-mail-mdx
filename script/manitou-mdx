@@ -448,7 +448,7 @@ sub main_multi {
       exit 1;
     }
   }
-  init_log();
+  init_log($option_fork ? "syslog":"console");
   init_temp_dir();
 
   if (defined $global_mbox && $global_mbox ne "") {
@@ -637,7 +637,8 @@ sub main_multi {
     # daemon mode
     $SIG{'TERM'} = 'sigterm';
     $SIG{'INT'} = 'sigterm';
-    LogSuccess("starting in daemon mode");
+    my $msg_fork = $option_fork ? "forked":"non-forked";
+    LogSuccess("starting in daemon $msg_fork mode");
     $dbh->begin_work;
     Manitou::Words::flush_jobs_queue($dbh);
     $dbh->commit;

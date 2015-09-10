@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2015 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -27,25 +27,54 @@ require Exporter;
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(notice_log error_log init_log debug_log warning_log);
 
+my $dest;
 
 sub init_log {
-  openlog("manitou-mdx", "pid", "user");
+  $dest=shift;
+  if ($dest eq "syslog") {
+    openlog("manitou-mdx", "pid", "user");
+  }
 }
 
 sub notice_log {
-  syslog("notice", shift);
+  my $msg=shift;
+  if ($dest eq "syslog") {
+    syslog("notice", $msg);
+  }
+  else {
+    print STDERR "Notice: $msg\n";
+  }
 }
 
 sub error_log {
-  syslog("err", shift);
+  my $msg=shift;
+  if ($dest eq "syslog") {
+    syslog("err", $msg);
+  }
+  else {
+    print STDERR "Error: $msg\n";
+  }
 }
 
 sub debug_log {
-  syslog("debug", shift)
+  my $msg=shift;
+  if ($dest eq "syslog") {
+    syslog("debug", $msg)
+  }
+  else {
+    print STDERR "Debug: $msg\n";
+  }
+
 }
 
 sub warning_log {
-  syslog("warning", shift);
+  my $msg=shift;
+  if ($dest eq "syslog") {
+    syslog("warning", $msg);
+  }
+  else {
+    print STDERR "Warning: $msg\n";
+  }
 }
 
 1;
