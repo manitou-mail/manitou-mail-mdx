@@ -477,7 +477,11 @@ sub main_multi {
     }
     $dir=getconf("spool_maildir", $m);
     if (defined $dir) {
-      $maildirs{$m} = {type=>"maildir", location=>$dir};
+      # spool_maildir accepts multiple directories separated by ':'
+      # warning: no quoting mechanism for ':'
+      foreach (split /:/, $dir) {
+	push @{$maildirs{$m}}, {type=>"maildir", location=>$_};
+      }
     }
     $dir=getconf("spool_mailbox", $m);
     if (defined $dir) {
@@ -672,10 +676,16 @@ sub main_multi {
 	}
 	for my $mbox (keys %maildirs) {
 	  # In this context (importing files as they appear, as opposed to an archive)
-	  # we consider only new/, not cur/
-	  my $origin = {type=>"maildir",
-			location=>$maildirs{$mbox}->{location}."/new"};
-	  $still_to_go += import_mailfiles($mbox, $origin);
+	  # we consider cur/, then new/
+	  for my $maildir_component (@{$maildirs{$mbox}}) {
+	    my $origin = {type=>"maildir",
+			  location=>$maildir_component->{location}."/cur"};
+	    $still_to_go += import_mailfiles($mbox, $origin);
+
+	    $origin = {type=>"maildir",
+		       location=>$maildir_component->{location}."/new"};
+	    $still_to_go += import_mailfiles($mbox, $origin);
+	  }
 	}
 	for my $mbox (keys %spool_mboxes) {
 	  my $o=$spool_mboxes{$mbox};
