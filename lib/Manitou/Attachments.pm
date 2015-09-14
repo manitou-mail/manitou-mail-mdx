@@ -129,12 +129,11 @@ sub flatten_and_insert_attach {
   return $attachments;
 }
 
-# remove undesirable characters
+# remove/replace undesirable characters
 sub sanitize_filename {
   my $f=$_[0];
-  $f =~ s/\/\\\"\'\<\>//g;
   $f =~ s/\s/_/g;
-  $f =~ tr/\x00-\x1F//d;
+  $f =~ tr{:/\\"'<>\x00-\x1F}/________/d;
   return $f;
 }
 
