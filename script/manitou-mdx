@@ -1830,11 +1830,8 @@ sub redirect {
   my $args=shift;
   my $fh;
 
-  my $cmd=getconf("local_delivery_agent", $args->{From});
-  if (!defined($cmd)) {
-    print STDERR "redirect: unable to pass the mail to a local delivery agent.\nCheck your configuration file for the 'local_delivery_agent' entry\n";
-    return 0;
-  }
+  my $cmd = get_delivery_agent($args->{From}) or return 0;
+
   my $top;
   if (defined $args->{mailfile}) {
     if (!open($fh, $args->{mailfile})) {
@@ -1877,13 +1874,7 @@ sub send_one_mail {
   my $decl_charset = getconf("preferred_charset", $from) || 'iso-8859-1';
   my @charsets = split(/\s+/, $decl_charset);
 
-  my $cmd = getconf("local_delivery_agent", $from);
-  if (!defined($cmd)) {
-    print STDERR "Unable to pass the mail to a local delivery agent.\nCheck your configuration file for the 'local_delivery_agent' entry\n";
-    return 0;
-  }
-  $cmd =~ s/\$FROM\$/$from/g;
-
+  my $cmd = get_delivery_agent($from) or return 0;
   $dbh->begin_work;
 
   my $sthb = $dbh->prepare("SELECT bodytext,bodyhtml FROM body WHERE mail_id=?") || die "Can't prepare statement: $DBI::errstr";
@@ -2059,6 +2050,34 @@ sub send_one_mail {
 
   $dbh->commit;
   return $ret;
+}
+
+# Get the command to delivery mail locally
+sub get_delivery_agent {
+  my $from=shift;
+  my $cmd = getconf("local_delivery_agent", $from);
+  if (!defined $cmd) {
+    my $name = "sendmail";
+    my $path = Manitou::Config::find_program($name);
+    if (!defined $path) {
+      my @dirs=("/usr/sbin", "/usr/lib");
+      foreach (@dirs) {
+	if (-e "$_/$name") {
+	  $path = "$_/$name";
+	  last;
+	}
+      }
+      if (!defined $path) {
+	print STDERR "Unable to pass the mail to a local delivery agent.\nCheck your configuration file for the 'local_delivery_agent' entry\n";
+	return undef;
+      }
+    }
+    $cmd = "$path -f $from -t";
+  }
+  else {
+    $cmd =~ s/\$FROM\$/$from/g;
+  }
+  return $cmd;
 }
 
 sub send_mails {

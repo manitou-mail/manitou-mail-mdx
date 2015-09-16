@@ -23,6 +23,7 @@ package Manitou::Config;
 require Exporter;
 use vars qw(@ISA @EXPORT_OK);
 use Carp;
+use File::Spec;
 
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(getconf getconf_bool add_mbox mailboxes readconf set_common_conf);
@@ -44,7 +45,6 @@ my %default_conf =
    'index_words' => "yes",
    'index_words_accent_mode' => "dual", # strip, keep
    'index_words_html_parts' => "yes",
-   'local_delivery_agent' => "sendmail -f \$FROM\$ -t",
    'log_filter_hits' => 'yes',
    'preferred_charset' => "iso-8859-1 iso-8859-15 utf-8",
    'preferred_datetime' => "mtime",
@@ -248,6 +248,16 @@ sub get_identity_id {
 
 sub mailboxes {
   return keys %mbox_conf;
+}
+
+sub find_program {
+  my $progname = shift;
+  my @path = File::Spec->path();
+
+  foreach my $p ( map { File::Spec->catfile($_, $progname) } @path ) {
+    return $p if ( -e "$p");
+  }
+  undef;
 }
 
 1;
