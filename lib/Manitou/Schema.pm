@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2015 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -781,7 +781,8 @@ sub create_data_statements {
      'jpg' => 'image/jpeg',
      'gif' => 'image/gif',
      'png' => 'image/png',
-     'bmp' => 'image/bmp'
+     'bmp' => 'image/bmp',
+     'eml' => 'message/rfc822'
     );
 
   my @statements;
