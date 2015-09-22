@@ -30,11 +30,11 @@ require Exporter;
 		partition_words);
 
 sub current_version {
-  return "1.3.1";
+  return "1.4.0";
 }
 
 sub supported_versions {
-  return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0", "1.3.1");
+  return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0", "1.4.0");
 }
 
 my $create_script=<<EOF;
@@ -900,7 +900,7 @@ sub upgrade_schema_statements {
     push @stmt, $tables{"import_message"};
     push @stmt, $functions{"wordsearch"};
   }
-  elsif ($from eq "1.3.0" && $to eq "1.3.1") {
+  elsif ($from eq "1.3.0" && $to eq "1.4.0") {
     # no change in schema
   }
   return @stmt;
