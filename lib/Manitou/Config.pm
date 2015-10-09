@@ -144,7 +144,7 @@ sub set_common_conf {
   $mbox_conf{'common'}->{$confkey}=$val;
 }
 
-sub check_option_type {
+sub check_value_domain {
   my ($type,$value)=@_;
   return 0 if ($type eq 'bool' && lc($value) ne 'yes' && lc($value) ne 'no');
   1;				# later
@@ -164,7 +164,7 @@ sub readconf {
     $_ =~ s/\s+$//;		# trim trailing blanks
     next if (/^\#/ || /^$/);	# comment or empty line
     if ($multiline) {
-      if (/(.*)\s*\\$/) {
+      if (/(.*?)\s*\\$/) {
 	$value=$1;
       }
       else {
@@ -201,15 +201,16 @@ sub readconf {
 	}
 	$multiline=1;
       }
-      if (!check_option_type($type, $value)) {
+      if (!check_value_domain($type, $value)) {
 	$err->{msg} = "illegal value for option '$param' at line $line. The variable is expected to be of type '$type'";
 	return 0;
       }
       if ($type ne 'strings') {
-	$mbox_conf{$cur_mbox}->{$param}=$value;
+	$mbox_conf{$cur_mbox}->{$param} = $value;
       }
       else {
-	push @{$mbox_conf{$cur_mbox}->{$param}}, $value;
+	# multi-lines declaration. Skip empty values.
+	push @{$mbox_conf{$cur_mbox}->{$param}}, $value unless (length($value)==0);
       }
     }
     else {
