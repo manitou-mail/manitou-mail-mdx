@@ -690,7 +690,8 @@ sub child_reindex_words {
 
 sub reindex_words {
   my ($dbh,$opt)=@_;
-  my $partsize = Manitou::Words::load_fti_config($dbh);
+  my $fti_conf = Manitou::Words::load_fti_config($dbh);
+  my $partsize = $fti_conf->{partsize};
   my @parts;
 
   my $p=$opt->{parts};
