@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -43,7 +43,6 @@ sub db_connect {
   my $dbh = DBI->connect($cnx_string) or die "Can't connect: $DBI::errstr";
   $dbh->{PrintError}=1;
   $dbh->{RaiseError}=1;
-  $dbh->{pg_auto_escape}=1;
   # We set AutoCommit to 1 to avoid being "idle in transaction" when doing
   # nothing, and we issue begin_work/commit pairs when transactions are needed
   $dbh->{AutoCommit}=1;

@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # manitou-mgr
-# Copyright (C) 2004-2015 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 # v1.4.0
@@ -227,7 +227,6 @@ sub Connect {
   $dbh = DBI->connect($cnx_string) or die "Can't connect: $DBI::errstr";
   $dbh->{PrintError}=0;
   $dbh->{RaiseError}=1;
-  $dbh->{pg_auto_escape}=1;
   $dbh->{AutoCommit}=1;
   if ($opt_quiet) {
     $dbh->do("set client_min_messages to error");
