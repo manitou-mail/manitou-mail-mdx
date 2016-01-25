@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -30,41 +30,53 @@ use vars qw(@ISA @EXPORT_OK);
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(encode_dbtxt decode_dbtxt header_decode);
 
-# The encoding name, as advertised by the database
-my $db_encoding;
-
-sub get_db_encoding {
-  my $dbh=shift;
-  my $sthe = $dbh->prepare("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname=current_database()") or croak $dbh->errstr;
-  $sthe->execute or croak $sthe->errstr;
-  ($db_encoding) = $sthe->fetchrow_array;
-  if ($db_encoding eq "UNICODE") {
-    # pre-8.1 pgsql returns "UNICODE", we prefer the newer "UTF8"
-    $db_encoding="UTF8";
-  }
-  $sthe->finish;
-}
+# Whether utf-8 Perl strings are converted to bytes before being sent
+# to the database
+my $pass_utf8_bytes;
 
 # Convert from perl internal format to a chain of bytes suitable for
 # the current db encoding
 sub encode_dbtxt {
+  return $_[0] if (!$pass_utf8_bytes);
   return undef if (!length($_[0]));
-  return Encode::encode("utf8", $_[0], Encode::FB_PERLQQ);
+  return Encode::encode("UTF-8", $_[0], Encode::FB_PERLQQ);
 }
 
 # Decode from the current db to perl internal format
 sub decode_dbtxt {
-  return Encode::decode("utf8", $_[0]);
+  return $_[0] if (!$pass_utf8_bytes && !$_[1]);
+  return Encode::decode("UTF-8", $_[0]);
+}
+
+sub get_db_encoding {
+  my $dbh=shift;
+  # determine how our version of DBD::Pg deals with utf-8 strings
+  $dbh->{pg_enable_utf8} = 0;
+  my $p = "\xc3\xa9";  # U+00C9 as an utf-8 octet sequence
+  my $sth = $dbh->prepare("SELECT ?,length(?),octet_length(?)",
+			  {pg_server_prepare=>0});
+  $sth->execute($p,$p,$p);
+  my @r = $sth->fetchrow_array;
+  if ($r[1]==1 && $r[2]==2) {
+    # keep it that way (pre DBD-3.0 behavior)
+    $pass_utf8_bytes = 1;
+    return;
+  }
+  else {
+    $dbh->{pg_enable_utf8} = 1;
+    $pass_utf8_bytes = 0;
+
+  }
 }
 
 sub header_decode {
   my $h;
   foreach (decode_mimewords($_[0])) {
     my @t=@{$_};
-    # default to iso-8859-15 if no or an invalid encoding is specified in the
-    # header. Normally this should be us-ascii but we're more permissive
-    # to avoid rejecting malformed messages containing 8 bit
-    # characters in headers.
+    # default to iso-8859-15 if no encoding is specified in the header
+    # or if it's invalid. Normally this should be us-ascii but we're
+    # more permissive to avoid rejecting malformed messages containing
+    # 8 bit characters in headers.
     $t[1]='iso-8859-15' if (!defined ($t[1]) || !Encode::resolve_alias($t[1]));
     eval {
       $h .= Encode::decode($t[1], $t[0]);
