@@ -295,12 +295,14 @@ sub attach_parts {
 # might be laid out in the database in advance to provide for more flexibility.
 sub create_html_part {
   my ($dbh, $mail_id, $ref_html_text) = @_;
+  my $enc_html = Encode::encode('utf-8', $$ref_html_text, Encode::LEAVE_SRC);
   my $sth = $dbh->prepare ("SELECT attachment_id,content_type,content_size,mime_content_id FROM attachments WHERE mail_id=? AND mime_content_id IS NOT NULL ORDER BY 1") || die "Can't prepare statement: $DBI::errstr";
   $sth->execute($mail_id) || die "Can't execute statement: $DBI::errstr";
   my $part;
+
   if ($sth->rows > 0) {
     $part = MIME::Entity->build('Type' => 'multipart/related');
-    $part->attach('Data' => $$ref_html_text,
+    $part->attach('Data' => $enc_html,
 		  'Encoding' => '-SUGGEST',
 		  'Type' => 'text/html',
 		  'Charset' => 'utf-8');
@@ -316,7 +318,7 @@ sub create_html_part {
     }
   }
   else {
-    $part = MIME::Entity->build('Data' => $$ref_html_text,
+    $part = MIME::Entity->build('Data' => $enc_html,
 				'Encoding' => '-SUGGEST',
 			        'Type' => 'text/html',
 			        'Charset' => 'utf-8',
