@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -29,26 +29,192 @@ require Exporter;
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(encode_header add_date_header encode_text_body parse_sender_date);
 
-# Fixed version of encode_mimewords, that merges consecutive rfc2047
-# encoded words separated by a space.
-sub my_encode_mimewords {
-    my ($rawstr, $in_charset) = @_;
-    my $charset  = uc($in_charset) || 'US-ASCII';
-    my $encoding = "Q";
-    my $NONPRINT = "\\x00-\\x1F\\x7F-\\xFF";
 
-    ### Encode any "words" with unsafe characters.
-    ###    We limit such words to 18 characters, to guarantee that the
-    ###    worst-case encoding give us no more than 54 + ~10 < 75 characters
-    my $word;
-    $rawstr =~ s{([a-zA-Z0-9\x7F-\xFF]{1,18})}{     ### get next "word"
-	$word = $1;
-	(($word !~ /[$NONPRINT]/o)
-	 ? $word                                          ### no unsafe chars
-	 : encode_mimeword($word, $encoding, $charset));  ### has unsafe chars
-    }xeg;
-    $rawstr =~ s/=\?$charset\?$encoding\?(.*)\?=\s+=\?$charset\?$encoding\?(.*)\?=/=?$charset?$encoding?$1_$2?=/g;
-    $rawstr;
+sub encode_qp_char {
+  my ($c, $charset) = @_;
+  my $res;
+  if (($c =~ /[_\?\=\x{0}-\x{1F}]/) || ord($c) >= 127) {
+    my $bytes = Encode::encode($charset, $c);
+    foreach my $b (split //, $bytes) {
+      $res .= sprintf("=%02X", ord($b))
+    }
+  }
+  else {
+    $res .= (ord($c)==32 ? '_' : $c);
+  }
+  $res;
+}
+
+sub encode_qp_word {
+  my ($word, $charset) = @_;
+  my $res;
+  foreach my $c (split //, $word) {
+    $res .= encode_qp_char($c, $charset);
+  }
+  $res;
+}
+
+# Encode a long expression into multiple mime-encoded words,
+# enforcing $limit as the max length of the first ME-word
+# and 75 for the next ME-words
+sub encode_qp_multiple_words {
+  my ($word, $charset, $limit) = @_;
+  my @list;
+  my $enc;
+  my $dec;
+  foreach my $c (split //, $word) {
+    my $q = encode_qp_char($c, $charset);
+    if (length($enc)+length($q) > $limit) {
+      push @list, { v=>$enc, d=>$dec, t=>'M' };
+      $enc = $q;
+      $dec = $c;
+    }
+    else {
+      $enc .= $q;
+      $dec .= $c;
+    }
+  }
+  push @list, { v=>$enc, d=>$dec, t=>'M' } if (defined $enc);
+  return @list;
+}
+
+sub assemble_rfc2047 {
+  my ($l, $reserved, $charset, $encoding)=@_;
+  my $maxl = 78;
+  my $mw_len = length("=?$charset?$encoding?")+2;
+
+  # combine ME-words separated by spaces
+  for (my $i=0; $i < @{$l}; $i++) { # @{$l} is modified inside the loop
+    my $s = $l->[$i];
+    if ($s->{t} eq 'S') {
+      if ($i>0 && $l->[$i-1]->{t} eq 'M' && $i+1<@{$l} && $l->[$i+1]->{t} eq 'M') {
+	my $txt = $l->[$i-1]->{d} . $s->{v} . $l->[$i+1]->{d};
+	my %ins = ( t=>'M', d=>$txt, v=>encode_qp_word($txt, $charset) );
+	splice @{$l}, $i-1, 3, (\%ins);
+	$i -= 2;   # stay on the current element
+      }
+    }
+  }
+
+  # split long ME words
+  for (my $i=0; $i < @{$l}; $i++) { # @{$l} is modified inside the loop
+    my $s = $l->[$i];
+    if ($s->{t} eq 'M') {
+      if (length($s->{v}) + $mw_len > 75) {
+	 # ME-word is too big, split it
+	my @ins = encode_qp_multiple_words($s->{d}, $charset, 75-$mw_len);
+	splice @{$l}, $i, 1, @ins;
+      }
+    }
+  }
+
+  # Fold
+  my $llen = 0;
+  my $mxl = $maxl - $reserved;
+  for (my $i=0; $i < @{$l}; $i++) {   # @{$l} is modified inside the loop
+    my $s = $l->[$i];
+    my $v = $s->{v};
+
+    if ($s->{t} eq 'M') {
+      $v = "=?$charset?$encoding?" . $v . "?=";
+    }
+
+    if ($s->{t} eq 'M' || $s->{t} eq 'V') {
+      if ($llen + length($v) > $mxl) {
+	if ($i>0 && $l->[$i-1]->{t} eq 'S') {
+	  # convert spaces to folding spaces
+	  $l->[$i-1]->{t} = 'N';
+	  $llen = length($l->[$i-1]->{v}) + length($v);
+	}
+	elsif ($i>0 && $l->[$i-1]->{t} eq 'M') {
+	  splice @{$l}, $i, 0, { t=>'N', v=>' ', d=>' ' };
+	  $llen = 1;
+	  $mxl = $maxl;
+	}
+	else {
+	  $llen = length($v)+ 2;
+	  $mxl = $maxl;
+	}
+      }
+      else {
+	$llen += length($v);
+      }
+    }
+    else {
+      $llen += length($v);
+    }
+  }
+  return @{$l};
+}
+
+sub encode_rfc2047_header {
+    my ($value, $in_charset, $reserved) = @_;
+    # $reserved is the number of bytes already used at the beginning of the
+    # header. Used to check against the rfc822 78/998 line length limits.
+
+    my $max_bytes = 78-$reserved;
+    my $charset  = uc($in_charset);
+    my $encoding = "Q";
+
+    # shortcut if short line containing only printable US-ASCII
+    if ($value !~ /[^\x20-\x7E]/ && length($value) < $max_bytes) {
+	return $value;
+    }
+
+    # fold the big line into several lines separated by newline+space
+    my @tokens = split (/( +)/, $value);
+
+    # if the line starts with WSPs, the first array elt will be undef: remove it
+    shift @tokens if (@tokens>0 && $tokens[0] eq "");
+
+    my @out;
+    for (my $i=0; $i < @tokens; $i++) {
+      my $w = $tokens[$i];
+      my $wl = length $w;
+      if ($w =~ / /o) {
+	# space(s)
+	push @out, { t=>'S', v=>$w };
+      }
+      else {
+	# word (non WSP)
+	if ($w =~ /[^\x{20}-\x{7e}]/o) {
+	  # word has characters outside of US-ASCII
+	  my $w0 = $w;
+	  $w = encode_qp_word($w, $charset);
+	  push @out, { t=>'M', v=>$w, d=>$w0 };
+	}
+	else {
+	  # word that doesn't need MIME encoding
+	  push @out, { t=>'V', v=>$w };
+	}
+      }
+    }
+
+    # Reassemble the words
+    assemble_rfc2047(\@out, $reserved, $charset, $encoding);
+
+    my $llen = 0;
+    my $mline;			# multi-line output
+    foreach (@out) {
+      my $v = $_->{v};
+      if ($_->{t} eq "M") {
+	$v = "=?$charset?$encoding?" . $v . "?=";
+	$mline .= $v;
+      }
+      elsif ($_->{t} eq "V") {
+	$mline .= $v;
+      }
+      elsif ($_->{t} eq "N") {
+	$mline .= "\n" . $v;
+	$llen = 0;
+      }
+      elsif ($_->{t} eq "S") {
+	$mline .= $v;
+      }
+      $llen += length $v;
+    }
+
+    return $mline;
 }
 
 sub encode_header {
@@ -57,6 +223,10 @@ sub encode_header {
   my @charsets=@_;
 
   my $hln=0;
+  # do not automatically reformat headers (Mail::Head's automatic
+  # reformatting converts our CRLF+LWSP between mime-encoded word to
+  # spaces)
+  $top->head->modify(0);
   for my $hl (split (/\n/, $header_lines)) {
     $hln++;
     chomp $hl;
@@ -80,8 +250,7 @@ sub encode_header {
 	  die "Unable to encode outgoing header entry at line $hln with any of the specified charsets (See 'preferred_charset' configuration parameter)";
 	}
       }
-      my $v = my_encode_mimewords($eh_line, $eh_charset);
-
+      my $v = encode_rfc2047_header($h_line, $eh_charset, length($h_entry)+2);
       $top->head->replace($h_entry, $v);
 
     }
