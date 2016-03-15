@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
-# manitou-mdx v-1.4.0
-# Copyright (C) 2004-2015 Daniel Verite
+# manitou-mdx v-1.4.1
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -1296,7 +1296,7 @@ sub import_message_2 {
     foreach (decode_mimewords($top->head->as_string)) {
       my @t=@{$_};
       if (!defined($t[1])) {	# us-ascii substring
-	$t[0] =~ s/\r?\n(\s)/$1/sog if defined ($t[0]);
+	$t[0] =~ s/\r?\n\s/ /sog if defined ($t[0]);
 	$safe_header .= $t[0];
       }
       else {			# other charset: convert it to perl internal format
@@ -1309,7 +1309,7 @@ sub import_message_2 {
 	  # we fall down to using the string as is
 	  $tu=$t[0];
 	}
-	$tu =~ s/\r?\n(\s)/$1/sog if (defined($tu));
+	$tu =~ s/\r?\n\s/ /sog if (defined($tu));
 	$safe_header .= $tu;
       }
     }
