@@ -282,7 +282,8 @@ CREATE TABLE global_notepad (
 );
 EOF
 
-my %tables=("mailing_definition"=> <<'EOT'
+my %tables=(
+"mailing_definition"=> <<'EOT'
 CREATE TABLE mailing_definition (
   mailing_id serial PRIMARY KEY,
   title text,
@@ -345,6 +346,19 @@ CREATE TABLE import_message (
   mail_id int
 )
 EOT
+,"tags_archive_counters" => <<'EOT'
+CREATE TABLE tags_archive_counters (
+  tag_id integer references tags(tag_id),
+  cnt integer
+)
+EOT
+,"tags_archive_counters_queue" => <<'EOT'
+CREATE TABLE tags_archive_counters (
+  tag_id integer references tags(tag_id),
+  cnt integer,
+  insert_date timestamptz default now()
+)
+EOT
 );
 
 my %object_comments=(
@@ -355,7 +369,8 @@ my %object_comments=(
 "import_mbox.auto_purge" => "Delete the row in this table when the import has successfully completed",
 );
 
-my %functions=("insert_mail" => <<'EOFUNCTION'
+my %functions=(
+"insert_mail" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION insert_mail() RETURNS TRIGGER AS $$
 BEGIN
 	IF NEW.status&(256+32+16)=0 THEN
@@ -497,18 +512,26 @@ $$ LANGUAGE plpgsql
 EOFUNCTION
 ,
 
+"status_archived" => <<'EOFUNCTION'
+CREATE OR REPLACE FUNCTION status_archived(int) returns boolean as $$
+ select $1&32=32 AND $1&16=0;
+$$ language sql
+EOFUNCTION
+,
+
 "trash_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION trash_msg(in_mail_id integer, in_op integer) RETURNS integer AS $$
 DECLARE
 new_status int;
 BEGIN
-  UPDATE mail SET status=status|16,mod_user_id=in_op WHERE mail_id=in_mail_id;
-  SELECT INTO new_status status FROM mail WHERE mail_id=in_mail_id;
+  UPDATE mail SET status=status|16,mod_user_id=in_op WHERE mail_id=in_mail_id
+    RETURNING status INTO new_status;
   RETURN new_status;
 END;
-$$ LANGUAGE 'plpgsql'
+$$ LANGUAGE plpgsql
 EOFUNCTION
 ,
+
 "trash_msg_set" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION trash_msg_set(in_array_mail_id int[], in_op int) RETURNS int AS $$
 DECLARE
@@ -518,9 +541,31 @@ BEGIN
   GET DIAGNOSTICS cnt=ROW_COUNT;
   return cnt;
 END;
-$$ LANGUAGE 'plpgsql'
+$$ LANGUAGE plpgsql
 EOFUNCTION
 ,
+
+"multi_trash_mail_tags" => <<'EOFUNCTION'
+-- Update tags counters for messages that are archived and moving to the trashcan
+CREATE or REPLACE FUNCTION multi_trash_mail_tags(in_mail_id int[], in_user_id int)
+ returns table(t int, c int) as $$
+DECLARE
+  v_tag_id int;
+  v_mail_id int;
+  v_status int;
+BEGIN
+     RETURN QUERY
+       INSERT INTO tags_archive_counters_queue(tag_id, cnt)
+         SELECT mt.tag,-1*count(*) FROM mail m LEFT JOIN mail_tags mt USING(mail_id)
+	  WHERE m.status&(32+16)=32 AND m.mail_id IN (select unnest(in_mail_id))
+	  GROUP BY mt.tag
+         RETURNING tag_id,cnt;
+ -- END LOOP;
+END;
+$$ language plpgsql;
+EOFUNCTION
+,
+
 "untrash_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION untrash_msg(in_mail_id int, in_op int) RETURNS int AS $$
 DECLARE
@@ -647,7 +692,6 @@ BEGIN
 	  IF ((b1&(1<<j))!=0) THEN
 	    RETURN NEXT var_part_no*16384+(i*8)+j+1; -- hit
 	  END IF;
-	  j:=j+1;
 	END LOOP;
       END LOOP;
     END IF;
@@ -706,7 +750,6 @@ BEGIN
 	  IF ((b1&(1<<j))!=0) THEN
 	    RETURN NEXT in_part_no*16384+(i*8)+j+1; -- hit
 	  END IF;
-	  j:=j+1;
 	END LOOP;
       END LOOP;
     END IF;
@@ -744,7 +787,7 @@ sub extract_statements {
 
 sub create_table_statements {
   my @stmt=extract_statements($create_script);
-  for my $t (qw(mailing_definition mailing_run mailing_data mail_template import_mbox import_message)) {
+  foreach my $t (keys %tables) {
     push @stmt, $tables{$t};
   }
   foreach my $c (keys %object_comments) {
