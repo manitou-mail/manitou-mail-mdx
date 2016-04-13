@@ -305,36 +305,38 @@ sub create_database {
 
 sub create_schema {
   $dbh->begin_work;
+  print "BEGIN;\n" if ($opt_dry_run);
   $dbh->do("SET client_min_messages=warning");
   my @sequences=Manitou::Schema::create_sequence_statements();
-  print "Creating sequences\n" unless ($opt_quiet);
+  print "Creating sequences\n" unless ($opt_quiet || $opt_dry_run);
   create_schema_part(@sequences);
 
   my @tables=Manitou::Schema::create_table_statements();
-  print "Creating tables\n" unless ($opt_quiet);
+  print "Creating tables\n" unless ($opt_quiet || $opt_dry_run);
   create_schema_part(@tables);
 
   my @functions=Manitou::Schema::create_function_statements();
-  print "Creating functions\n" unless ($opt_quiet);
+  print "Creating functions\n" unless ($opt_quiet || $opt_dry_run);
   create_schema_part(@functions);
 
   my @triggers=Manitou::Schema::create_trigger_statements();
-  print "Creating triggers\n" unless ($opt_quiet);
+  print "Creating triggers\n" unless ($opt_quiet || $opt_dry_run);
   create_schema_part(@triggers);
 
   my @data=Manitou::Schema::create_data_statements();
-  print "Inserting configuration data\n" unless ($opt_quiet);
+  print "Inserting configuration data\n" unless ($opt_quiet || $opt_dry_run);
   create_schema_part(@data);
 
   my $version=Manitou::Schema::current_version();
   my $query="INSERT INTO runtime_info(rt_key,rt_value) VALUES ('schema_version','$version')";
   if ($opt_dry_run) {
-    print "$query;";
+    print "$query;\n";
   }
   else {
     $dbh->do($query);
   }
 
+  print "\nCOMMIT;\n" if ($opt_dry_run);
   $dbh->commit;
 }
 

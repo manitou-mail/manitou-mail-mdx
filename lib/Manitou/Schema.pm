@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2015 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -30,12 +30,12 @@ require Exporter;
 		partition_words);
 
 sub current_version {
-  return "1.4.0";
+  return "1.5.0";
 }
 
 sub supported_versions {
   return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0",
-	  "1.3.1", "1.4.0");
+	  "1.3.1", "1.4.0", "1.5.0");
 }
 
 my $create_script=<<EOF;
@@ -346,20 +346,15 @@ CREATE TABLE import_message (
   mail_id int
 )
 EOT
-,"tags_archive_counters" => <<'EOT'
-CREATE TABLE tags_archive_counters (
-  tag_id integer references tags(tag_id),
-  cnt integer
-)
-EOT
-,"tags_archive_counters_queue" => <<'EOT'
-CREATE TABLE tags_archive_counters (
-  tag_id integer references tags(tag_id),
-  cnt integer,
-  insert_date timestamptz default now()
-)
-EOT
 );
+
+my @ordered_tables = qw(
+  mailing_definition mailing_run mailing_data
+  mail_template
+  import_mbox import_message
+);
+
+
 
 my %object_comments=(
 "mailing_run.status" => "0=not started, 1=running, 2=stopped, 3=finished",
@@ -787,7 +782,7 @@ sub extract_statements {
 
 sub create_table_statements {
   my @stmt=extract_statements($create_script);
-  foreach my $t (keys %tables) {
+  foreach my $t (@ordered_tables) {
     push @stmt, $tables{$t};
   }
   foreach my $c (keys %object_comments) {
@@ -829,11 +824,15 @@ sub create_data_statements {
      'eml' => 'message/rfc822'
     );
 
-  my @statements;
+  my @v;
   while (my ($k,$v) = each %types) {
-    push @statements, "INSERT INTO mime_types VALUES('$k', '$v')";
+    push @v, "('$k', '$v')";
   }
-  return @statements;
+  my @v;
+  while (my ($k,$v) = each %types) {
+    push @v, "('$k', '$v')";
+  }
+  return ("INSERT INTO mime_types VALUES " . join(",", @v));
 }
 
 sub sql_comment {
@@ -945,6 +944,9 @@ sub upgrade_schema_statements {
     push @stmt, $functions{"wordsearch"};
   }
   elsif ($from eq "1.3.0" && $to eq "1.4.0") {
+    # no change in schema
+  }
+  elsif ($from eq "1.4.0" && $to eq "1.5.0") {
     # no change in schema
   }
   return @stmt;
