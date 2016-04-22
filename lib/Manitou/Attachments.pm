@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2015 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -143,6 +143,7 @@ sub insert_attachment {
   my $lobjId;
   my $attch_file=tmpnam();
   open(PGIN, ">$attch_file") or die "can not open $attch_file: $!";
+  binmode PGIN;
   $mime_obj->bodyhandle->print(\*PGIN);
   close(PGIN);
   my $filesize = stat($attch_file)->size;
