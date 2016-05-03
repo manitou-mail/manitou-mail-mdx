@@ -45,7 +45,7 @@ use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
 use Manitou::Schema;
 use Manitou::Attachments;
 
-my $VERSION="1.4.0";
+my $VERSION="1.5.0";
 
 my $dbh;
 my $cnx_string;
