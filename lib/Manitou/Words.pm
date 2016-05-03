@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2015 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -278,7 +278,7 @@ sub extract_words {
   foreach (split(/\n/, $$ptext)) {
     next if (length($_)>50 && !/[\s:\.\?,;]/);
 
-    foreach (split(/[\x{0}-\x{1e}\x{80}-\x{bf}\s+,\.\(\)\\<\>\{\}\x{2013}\x{2019}\x{201c}\x{201d}\"'`:;\/!\[\]\?=*\|]/o)) {
+    foreach (split(/[\x{0}-\x{1e}\x{80}-\x{bf}\s+,\.\(\)\\<\>\{\}\x{2000}-\x{206f}\"'`:;\/!\[\]\?=*\|]/o)) {
       next if (/^[-_#%|*=]+$/);  # skip horizontal separation lines
       if (/^[-~*_^|_=]+(.*)$/) {
 	$_ = $1;
