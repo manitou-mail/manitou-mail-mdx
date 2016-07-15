@@ -356,19 +356,6 @@ sub min {
   return $m;
 }
 
-sub is_excluded {
-  my $c=shift;
-  my $r=getconf("exclude_contents");
-  if (defined $r) {
-    my @x=split /\s+,\s+/, $r;
-    foreach (@x) {
-      return 1 if ($_ eq $c);
-    }
-  }
-  return 0;
-}
-
-
 sub db_reconnect {
   db_connect();
   notice_log("Successful database reconnect");
