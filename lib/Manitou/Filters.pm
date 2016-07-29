@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2015 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -28,6 +28,7 @@ use MIME::Parser;
 use MIME::Words qw(:all);
 use Manitou::Encoding;
 use Manitou::Config qw(getconf_bool);
+use Manitou::MailFormat;
 use DBI;
 
 my $filter_exprs;
@@ -130,7 +131,7 @@ sub list_addresses {
   my ($o, $field)=@_;
   my @a;
   eval {
-    @a = Mail::Address->parse(Manitou::Encoding::header_decode($o->head->get($field)));
+    @a = Manitou::MailFormat::parse_addresses(Manitou::Encoding::header_decode($o->head->get($field)));
   };
   return join ',', map { $_->address() } @a;
 }

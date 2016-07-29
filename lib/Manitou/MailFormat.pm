@@ -410,4 +410,17 @@ sub convert_sender_date_to_timestamp {
   }
 }
 
+# Wrapper for Mail::Address->parse()
+sub parse_addresses {
+  my $f=shift;
+  # Mail::Address->parse() does not parse address groups. Groups are
+  # not used in modern mail except for the "undisclosed-recipient:;"
+  # empty group, that is routinely used to express lack of recipients.
+  # We treat this group specially as an empty address, to avoid a parse error.
+  # Besides, according to RFC 2822, the presence of angle brackets around a group
+  # does not seem valid.
+  return () if ($f =~ /^<?undisclosed-recipient:\s*;>$/i);
+  return Mail::Address->parse($f);
+}
+
 1;

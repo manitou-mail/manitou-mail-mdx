@@ -1508,7 +1508,8 @@ sub insert_addresses {
     my $pos=0;  # relative to each addrtype
     eval {
       no warnings 'all';
-      @addrs=Mail::Address->parse(header_decode($mail->head->get($addrtype)));
+      @addrs = Manitou::MailFormat::parse_addresses(header_decode($mail->head->get($addrtype)));
+      # @addrs=Mail::Address->parse(header_decode($mail->head->get($addrtype)));
     };
 
     for my $a (@addrs) {
@@ -1618,8 +1619,8 @@ sub insert_mail {
   my @adr_from;
   my @adr_to;
   eval {
-    @adr_from=Mail::Address->parse($from);
-    @adr_to=Mail::Address->parse($to);
+    @adr_from = Manitou::MailFormat::parse_addresses($from);
+    @adr_to = Manitou::MailFormat::parse_addresses($to);
   };
   my $bp = 0;	# parameters counter
   $sth->bind_param (++$bp, $mail_id);
