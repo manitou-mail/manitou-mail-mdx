@@ -419,7 +419,7 @@ sub parse_addresses {
   # We treat this group specially as an empty address, to avoid a parse error.
   # Besides, according to RFC 2822, the presence of angle brackets around a group
   # does not seem valid.
-  return () if ($f =~ /^<?undisclosed-recipient:\s*;>$/i);
+  return () if ($f =~ /^<?undisclosed-recipients?:\s*;>?$/i);
   return Mail::Address->parse($f);
 }
 
