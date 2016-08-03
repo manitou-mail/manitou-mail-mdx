@@ -1515,8 +1515,8 @@ sub insert_addresses {
     for my $a (@addrs) {
       if ($a->address) {
 	push @haddr, {
-	  "email" => lc($a->address),
-	  "name" => $a->name,
+	  "email" => substr(lc($a->address), 0, 300),
+	  "name" => substr($a->name, 0, 300),
 	  "addr_id" => undef,
 	  "pos" => $pos<32767 ? $pos : 32767,
 	  "prio" => 0,

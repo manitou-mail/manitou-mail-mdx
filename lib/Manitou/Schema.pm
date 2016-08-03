@@ -159,9 +159,9 @@ CREATE TABLE files (
 
 CREATE TABLE addresses (
  addr_id INT PRIMARY KEY,
- email_addr  VARCHAR(300) UNIQUE,
- name  VARCHAR(300),
- nickname varchar(300),
+ email_addr text UNIQUE,
+ name  text,
+ nickname text,
  last_sent_to timestamptz,
  last_recv_from timestamptz,
  notes text,
