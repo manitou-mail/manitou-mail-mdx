@@ -30,12 +30,12 @@ require Exporter;
 		partition_words);
 
 sub current_version {
-  return "1.5.0";
+  return "1.6.0";
 }
 
 sub supported_versions {
   return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0",
-	  "1.3.1", "1.4.0", "1.5.0");
+	  "1.3.1", "1.4.0", "1.5.0", "1.6.0");
 }
 
 my $create_script=<<EOF;
@@ -44,7 +44,9 @@ CREATE TABLE identities (
   email_addr TEXT NOT NULL,
   username TEXT,
   xface TEXT,
-  signature TEXT
+  signature TEXT,
+  root_tag INT references tags(tag_id),
+  restricted BOOL default false
 );
 
 CREATE TABLE mail (
@@ -560,7 +562,102 @@ END;
 $$ language plpgsql;
 EOFUNCTION
 ,
+"object_permissions" => <<'EOFUNCTION'
+CREATE OR REPLACE FUNCTION object_permissions(ability text)
+ RETURNS table(objname text, objtype text, privtype text)
+ language plpgsql
+AS $$
+DECLARE
+ -- the tables that need to be SELECTable for a read-only user
+ tbl_ro text[]:='{
+      "addresses", "attachment_contents", "attachments",
+      "body", "config", "header", "identities", "mail",
+      "mail_addresses", "mail_status", "mail_tags",
+      "notes", "runtime_info", "tags", "users", "user_queries" }';
 
+ -- the tables that need to be UPDATE'able for a read-write user
+ tbl_upd text[]:='{
+      "addresses", "attachment_contents", "attachments",
+      "body", "config", "header", "mail",
+      "mail_addresses", "mail_status", "mail_tags",
+      "notes" }';
+
+ -- the tables that need to be DELETE'able for a deleter
+ tbl_del text[]:='{
+      "attachment_contents", "attachments",
+      "body", "header", "mail",
+      "mail_addresses", "mail_status", "mail_tags",
+      "notes", "raw_mail"   }';
+BEGIN
+  IF ability = 'read' THEN
+    -- permissions for "reader" ability
+    FOR objname, objtype, privtype IN
+     (SELECT a.objname, 'table', 'select'
+       FROM unnest(tbl_ro) as a(objname))
+    LOOP
+       RETURN NEXT;
+    END LOOP;
+
+    objname := 'wordsearch(text[],text[])';
+    objtype := 'function';
+    privtype := 'execute';
+    RETURN NEXT;
+
+  ELSIF ability = 'update' THEN
+    FOR objname, objtype, privtype IN
+     (SELECT a.objname, 'table', 'update'
+       FROM unnest(tbl_upd) as a(objname))
+    LOOP
+       RETURN NEXT;
+    END LOOP;
+
+  ELSIF ability = 'delete' THEN
+    objname := 'delete_msg(int)';
+    objtype := 'function';
+    privtype := 'execute';
+    RETURN NEXT;
+
+    objname := 'delete_msg_set(int[])';
+    objtype := 'function';
+    privtype := 'execute';
+    RETURN NEXT;
+
+    FOR objname, objtype, privtype IN
+     (SELECT a.objname, 'table', 'delete'
+       FROM unnest(tbl_del) as a(objname))
+    LOOP
+       RETURN NEXT;
+    END LOOP;
+
+  ELSIF ability = 'trash' THEN
+    objname := 'trash_msg(int,int)';
+    objtype := 'function';
+    privtype := 'execute';
+    RETURN NEXT;
+    objname := 'trash_msg_set(int[],int)';
+    objtype := 'function';
+    privtype := 'execute';
+    RETURN NEXT;
+
+  ELSIF ability = 'compose' THEN
+    objname := 'mail';
+    objtype := 'table';
+    privtype := 'insert';
+    RETURN NEXT;
+
+  ELSIF ability = 'admin-level1' THEN
+    -- ability to create/modify/delete filters and tags
+    RETURN QUERY
+     SELECT a.objname, 'table'::text, b.privtype
+       FROM (values('tags'),('filter_expr'),('filter_action')) as a(objname),
+       	    (values('insert'),('update'),('delete')) as b(privtype)
+    ;
+  END IF;
+
+END
+$$
+EOFUNCTION
+,
 "untrash_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION untrash_msg(in_mail_id int, in_op int) RETURNS int AS $$
 DECLARE
@@ -922,7 +1019,7 @@ sub upgrade_schema_statements {
 		 "UPDATE identities SET identity_id=nextval('seq_identity_id') WHERE identity_id is null",
 		 "ALTER TABLE identities ALTER COLUMN identity_id SET DEFAULT nextval('seq_identity_id')",
 		 "ALTER TABLE identities ALTER COLUMN email_addr TYPE text",
-		 "ALTER TABLE identities ALTER COLUMN username TYPE text", 
+		 "ALTER TABLE identities ALTER COLUMN username TYPE text",
 		 "ALTER TABLE mail RENAME COLUMN mbox_id TO identity_id",
 		 "DROP TABLE mailboxes CASCADE",
 		 "ALTER TABLE identities ADD PRIMARY KEY (identity_id)",
@@ -948,6 +1045,13 @@ sub upgrade_schema_statements {
   }
   elsif ($from eq "1.4.0" && $to eq "1.5.0") {
     # no change in schema
+  }
+  elsif ($from eq "1.5.0" && $to eq "1.6.0") {
+    push @stmt, $functions{"object_permissions"};
+    push @stmt, ("ALTER TABLE addresses ALTER COLUMN name TYPE text",
+		 "ALTER TABLE addresses ALTER COLUMN email_addr TYPE text");
+    push @stmt, ("ALTER TABLE identities ADD root_tag integer REFERENCES tags(tag_id)",
+		 "ALTER TABLE identities ADD restricted bool DEFAULT false");
   }
   return @stmt;
 }
