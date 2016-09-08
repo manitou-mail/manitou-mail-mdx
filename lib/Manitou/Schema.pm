@@ -335,6 +335,12 @@ CREATE TABLE mail_template (
   creation_date timestamptz default now()
 )
 EOT
+,"identities_permissions" => <<'EOT'
+CREATE TABLE identities_permissions (
+  role_oid oid,
+  identity_id int REFERENCES identities(identity_id)
+);
+EOT
 ,"import_mbox" => <<'EOT'
 CREATE TABLE import_mbox (
   import_id serial PRIMARY KEY,
@@ -362,6 +368,7 @@ my @ordered_tables = qw(
   mailing_definition mailing_run mailing_data
   mail_template
   import_mbox import_message
+  identities_permissions
 );
 
 
@@ -570,6 +577,7 @@ END;
 $$ language plpgsql;
 EOFUNCTION
 ,
+
 "object_permissions" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION object_permissions(ability text)
  RETURNS table(objname text, objtype text, privtype text)
@@ -630,22 +638,15 @@ BEGIN
     privtype := 'execute';
     RETURN NEXT;
 
-    FOR objname, objtype, privtype IN
-     (SELECT a.objname, 'table', 'delete'
-       FROM unnest(tbl_del) as a(objname))
-    LOOP
-       RETURN NEXT;
-    END LOOP;
+    RETURN QUERY SELECT a.objname, 'table'::text, 'delete'::text
+       FROM unnest(tbl_del) as a(objname);
 
   ELSIF ability = 'trash' THEN
-    objname := 'trash_msg(int,int)';
-    objtype := 'function';
-    privtype := 'execute';
-    RETURN NEXT;
-    objname := 'trash_msg_set(int[],int)';
-    objtype := 'function';
-    privtype := 'execute';
-    RETURN NEXT;
+    RETURN QUERY SELECT n::text,t::text,pt::text FROM (VALUES
+       ('execute', 'function', 'trash_msg(int,int)'),
+       ('execute', 'function', 'trash_msg_set(int[],int)'),
+       ('update', 'table', 'mail')
+      ) AS tbl(pt,t,n);
 
   ELSIF ability = 'compose' THEN
     objname := 'mail';
@@ -657,8 +658,8 @@ BEGIN
     -- ability to create/modify/delete filters and tags
     RETURN QUERY
      SELECT a.objname, 'table'::text, b.privtype
-       FROM (values('tags'),('filter_expr'),('filter_action')) as a(objname),
-       	    (values('insert'),('update'),('delete')) as b(privtype)
+       FROM (values('tags'),('filter_expr'),('filter_action')) as a(objname)
+       	    CROSS JOIN (values('insert'),('update'),('delete')) as b(privtype)
     ;
   END IF;
 
@@ -666,6 +667,40 @@ END
 $$
 EOFUNCTION
 ,
+
+"set_identity_permissions" => <<'EOFUNCTION'
+CREATE OR REPLACE FUNCTION set_identity_permissions(
+       in_oid oid, --oid of role
+       in_identities int[], -- references to identities.identity_id
+       in_perms character[] -- for future use (permission types). Pass array['A'] here.
+) RETURNS VOID AS $$
+DECLARE
+  stmt text;
+BEGIN
+  IF in_oid IS NULL THEN RETURN; END IF;
+  DELETE FROM identities_permissions WHERE role_oid = in_oid;
+  INSERT INTO identities_permissions(role_oid,identity_id)
+    SELECT in_oid, * FROM unnest(in_identities);
+  BEGIN
+    EXECUTE 'DROP POLICY ident_' || in_oid || ' ON mail';
+  EXCEPTION WHEN undefined_object THEN
+    --do nothing
+  END;
+    IF (array_length(in_identities,1) >= 1) THEN
+      SELECT 'CREATE POLICY ident_' || in_oid || ' ON MAIL FOR ALL TO ' ||
+        quote_ident(rolname) || ' USING (identity_id IN (' ||
+	array_to_string(in_identities,',') || '))'
+	FROM pg_roles WHERE oid = in_oid
+      INTO stmt;
+      raise debug 'policy stmt = %', stmt;
+      IF stmt IS NOT NULL THEN
+        EXECUTE stmt;
+      END IF;
+    END IF;
+END $$ language plpgsql
+EOFUNCTION
+,
+
 "untrash_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION untrash_msg(in_mail_id int, in_op int) RETURNS int AS $$
 DECLARE
