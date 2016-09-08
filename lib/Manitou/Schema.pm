@@ -45,7 +45,7 @@ CREATE TABLE identities (
   username TEXT,
   xface TEXT,
   signature TEXT,
-  root_tag INT references tags(tag_id),
+  root_tag INT, -- references tags(tag_id)
   restricted BOOL default false
 );
 
@@ -283,6 +283,14 @@ CREATE TABLE global_notepad (
  last_modified timestamptz
 );
 EOF
+
+my @post_create_table_statements = (
+  # foreign keys that can't be declared at create time because
+  # of cycles in dependencies
+
+  "ALTER TABLE identities ADD CONSTRAINT identities_root_tag_fkey FOREIGN KEY (root_tag) REFERENCES tags(tag_id)"
+
+);
 
 my %tables=(
 "mailing_definition"=> <<'EOT'
@@ -885,7 +893,9 @@ sub create_table_statements {
   foreach my $c (keys %object_comments) {
     push @stmt, sql_comment($c);
   }
-
+  foreach (@post_create_table_statements) {
+    push @stmt, $_;
+  }
   return @stmt;
 
 }
