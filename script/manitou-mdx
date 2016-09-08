@@ -1226,6 +1226,7 @@ sub import_message_2 {
     $pl_ctxt{'mimeobj'}=$top;
     $pl_ctxt{'mail_id'}=$mail_id;
     $pl_ctxt{'dbh'}=$dbh;
+    $pl_ctxt{'status'}=$mail_ctxt->{'status'};
     if ($mail_ctxt->{'tags'}) {
       @{$pl_ctxt{'tags'}} = @{$mail_ctxt->{'tags'}};
     }
@@ -1235,6 +1236,7 @@ sub import_message_2 {
     if (defined $pl_ctxt{'tags'}) {
       @{$mail_ctxt->{'tags'}} = @{$pl_ctxt{'tags'}};
     }
+    $mail_ctxt->{'status'} = $pl_ctxt{'status'};
   }
 
   $attachments = 0;
