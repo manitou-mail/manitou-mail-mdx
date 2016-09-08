@@ -4,7 +4,7 @@
 # Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
-# v1.4.0
+# v1.6.0
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -45,7 +45,7 @@ use Manitou::Encoding qw(encode_dbtxt decode_dbtxt);
 use Manitou::Schema;
 use Manitou::Attachments;
 
-my $VERSION="1.5.0";
+my $VERSION="1.6.0";
 
 my $dbh;
 my $cnx_string;
