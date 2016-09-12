@@ -587,8 +587,8 @@ DECLARE
  -- the tables that need to be SELECTable for a read-only user
  tbl_ro text[]:='{
       "addresses", "attachment_contents", "attachments",
-      "body", "config", "header", "identities", "mail",
-      "mail_addresses", "mail_status", "mail_tags",
+      "body", "config", "header", "identities", "identities_permissions",
+      "mail", "mail_addresses", "mail_status", "mail_tags",
       "notes", "runtime_info", "tags", "users", "user_queries" }';
 
  -- the tables that need to be UPDATE'able for a read-write user
