@@ -41,9 +41,6 @@ sub finish {
 
 sub process {
   my ($self,$ctxt)=@_;
-  # Set the mail status to archived+read if not already set.
-  print "status=", $ctxt->{status};
-  print Dumper($self);
   if ($ctxt->{status} == 0 && defined $self->{args}->{status}) {
     $ctxt->{status} = $self->{args}->{status};
   }
