@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2012 Daniel Verite
+# Copyright (C) 2004-2016 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -67,8 +67,8 @@ sub load_tags {
       @{$t{$id}}[2] = @{$t{$parent_id}}[0] . "->" . @{$t{$id}}[2];
       $parent_id = @{$t{$parent_id}}[1];
     }
-    $ht->{@{$t{$id}}[2]}=$id;   # keep only the full hierarchical name
-    $htuc->{uc(@{$t{$id}}[2])}=$id;   # keep only the full hierarchical name
+    $ht->{@{$t{$id}}[2]} = $id;   # keep only the full hierarchical name
+    $htuc->{uc(@{$t{$id}}[2])} = $id;   # keep only the full hierarchical name
   }
 }
 
@@ -143,6 +143,16 @@ sub flattened_tag_name {
     push @names, decode_dbtxt($namepart);
   }
   return join("->", reverse @names);
+}
+
+
+# Return a tag_id from a full hierarchical name
+sub tag_id_from_name {
+  my ($dbh, $tagname) = @_;
+  my %tags;
+  my %uc_tags;
+  load_tags($dbh, \%tags, \%uc_tags);
+  return $uc_tags{uc($tagname)};
 }
 
 1;
