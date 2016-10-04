@@ -293,6 +293,7 @@ sub import_mailfiles {
 	  if (defined($ctxt{'tags'})) {
 	    @{$plugins_ctxt{'tags'}}=@{$ctxt{'tags'}};
 	  }
+	  $plugins_ctxt{mail_id} = $ctxt{mail_id};
 	  for my $plugin (@{$postprocess_plugins{$mbox}}) {
 	    $plugin->process(\%plugins_ctxt);
 	  }
