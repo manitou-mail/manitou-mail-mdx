@@ -309,7 +309,7 @@ sub import_mailfiles {
 	  }
 	}
 	elsif ($ret==-1) {
-	  error_log("Discarded: $fname");
+	  notice_log("Discarded: $fname");
 	}
 	my $cmd=getconf("postprocess_mailfile_cmd", $mbox);
 	if (defined $cmd) {
