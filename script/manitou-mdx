@@ -248,6 +248,8 @@ sub import_mailfiles {
 	push @{$plugins_ctxt{tags}}, $pretagged_files{$rel_fname};
       }
       @{$plugins_ctxt{tags}}=@{$l} if ($l);
+      $plugins_ctxt{identity_id} = Manitou::Config::get_identity_id($dbh, $mbox);
+
       for my $preproc_plugin (@{$preprocess_plugins{$mbox}}) {
 	$preproc_plugin->process(\%plugins_ctxt);
       }
