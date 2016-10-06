@@ -25,6 +25,11 @@
 # from the (fingerprint,mail_id) association
 # Init with {'update_tags'=>1} to replace tags of the old message
 # by the tags of the new identical incoming message that is skipped.
+# Init with 'ignore_identities' set to 1 to deduplicate on fingerprints
+# independently of mail.identity_id
+# If 'ignore_identities' is set to 0, which is the default case, duplicates
+# are considered per-identity, but the plugin *must* be declared
+# as a postprocess plugin for the deduplication to work at all.
 
 package Manitou::Plugins::no_duplicate;
 
@@ -38,14 +43,25 @@ sub init {
   my ($args)=@_;
   my $self={};
   bless $self;
-  $self->{update_tags} = $args->{update_tags} if (defined $args->{update_tags});
+  foreach ("update_tags", "ignore_identities") {
+    $self->{$_} = $args->{$_} if (defined $args->{$_});
+  }
 
   my $sth=$dbh->prepare("SELECT 1 FROM information_schema.tables WHERE table_name='no_duplicate_import'");
   $sth->execute();
   my @r=$sth->fetchrow_array;
   if (!@r) {
     $dbh->begin_work;
-    $dbh->do("CREATE TABLE no_duplicate_import(sha1_digest bytea primary key, mail_id int)");
+
+    # Can't have sha1_digest as a primary key, because we might accept duplicates
+    # across identities.
+    # The unique constraint would be (sha1,identity_id) if the identity was
+    # in that table, but it resides in mail.
+    $dbh->do("CREATE TABLE no_duplicate_import(sha1_digest bytea, mail_id int)");
+
+    # Non-unique index
+    $dbh->do("CREATE INDEX no_duplicate_import_idx ON no_duplicate_import(sha1_digest)");
+
     # trigger to remove entries on deletion
     $dbh->do(q{CREATE FUNCTION no_duplicate_import_del() RETURNS trigger AS $$ BEGIN DELETE FROM no_duplicate_import WHERE mail_id=OLD.mail_id; RETURN NEW; END $$ language plpgsql});
     $dbh->do(q{CREATE TRIGGER no_duplicate_import_trigger AFTER DELETE ON mail FOR EACH ROW EXECUTE PROCEDURE no_duplicate_import_del()});
@@ -108,11 +124,22 @@ sub process {
     my $sha1 = Digest::SHA->new("SHA-1");
     $sha1->addfile($fh);
     $ctxt->{sha1_digest} = $sha1->digest;
-    my $sth = $ctxt->{dbh}->prepare(q{
+    my $sth;
+    if ($self->{ignore_identities}) {
+      $sth = $ctxt->{dbh}->prepare(q{
+	INSERT INTO no_duplicate_import(sha1_digest) SELECT $1 WHERE NOT EXISTS
+	  (SELECT 1 FROM no_duplicate_import WHERE sha1_digest=$1)
+      });
+    }
+    else {
+      $sth = $ctxt->{dbh}->prepare(q{
 	INSERT INTO no_duplicate_import(sha1_digest)
-	  SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM no_duplicate_import WHERE sha1_digest=$1)
-    });
+	  SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM no_duplicate_import JOIN mail USING(mail_id)
+	    WHERE sha1_digest=$1 AND identity_id=$2)
+      });
+    }
     $sth->bind_param('$1', $ctxt->{sha1_digest}, { pg_type=>DBD::Pg::PG_BYTEA });
+    $sth->bind_param('$2', $ctxt->{identity_id}) if (!$self->{ignore_identities});
     $sth->execute;
     # tell the caller to discard the message if the digest already exists.
     if (!$sth->rows) {
@@ -120,7 +147,7 @@ sub process {
 
       # Optionally, reassign the new tags to the already existing identical copy
       # of the message.
-      if ($self->{update_tags} == 1) {
+      if ($self->{update_tags}) {
 	my $sth = $ctxt->{dbh}->prepare('SELECT mail_id FROM no_duplicate_import WHERE sha1_digest=$1');
 	$sth->bind_param('$1', $ctxt->{sha1_digest}, { pg_type=>DBD::Pg::PG_BYTEA });
 	$sth->execute;
@@ -139,6 +166,13 @@ sub process {
     $sth->bind_param('$1', $ctxt->{mail_id});
     $sth->bind_param('$2', $ctxt->{sha1_digest}, { pg_type=>DBD::Pg::PG_BYTEA });
     $sth->execute;
+    if ($sth->rows==0) {
+      my $sth1 = $ctxt->{dbh}->prepare('INSERT INTO duplicate_import(mail_id,sha1_digest) VALUES($1,$2)');
+      $sth1->bind_param('$1', $ctxt->{mail_id});
+      $sth1->bind_param('$2', $ctxt->{sha1_digest}, { pg_type=>DBD::Pg::PG_BYTEA });
+      $sth1->execute;
+      $sth1->finish;
+    }
     $sth->finish;
   }
   1;
