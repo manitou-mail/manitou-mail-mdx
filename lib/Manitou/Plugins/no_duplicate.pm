@@ -167,7 +167,7 @@ sub process {
     $sth->bind_param('$2', $ctxt->{sha1_digest}, { pg_type=>DBD::Pg::PG_BYTEA });
     $sth->execute;
     if ($sth->rows==0) {
-      my $sth1 = $ctxt->{dbh}->prepare('INSERT INTO duplicate_import(mail_id,sha1_digest) VALUES($1,$2)');
+      my $sth1 = $ctxt->{dbh}->prepare('INSERT INTO no_duplicate_import(mail_id,sha1_digest) VALUES($1,$2)');
       $sth1->bind_param('$1', $ctxt->{mail_id});
       $sth1->bind_param('$2', $ctxt->{sha1_digest}, { pg_type=>DBD::Pg::PG_BYTEA });
       $sth1->execute;
