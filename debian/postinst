@@ -1,4 +1,4 @@
-#!/bin/sh -e
+#!/bin/sh
 . /usr/share/debconf/confmodule
 
 case "$1" in
