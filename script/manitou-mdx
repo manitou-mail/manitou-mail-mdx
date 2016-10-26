@@ -1520,8 +1520,8 @@ sub insert_addresses {
     for my $a (@addrs) {
       if ($a->address) {
 	push @haddr, {
-	  "email" => substr(lc($a->address), 0, 300),
-	  "name" => substr($a->name, 0, 300),
+	  "email" => lc($a->address),
+	  "name" => $a->name,
 	  "addr_id" => undef,
 	  "pos" => $pos<32767 ? $pos : 32767,
 	  "prio" => 0,
@@ -1690,7 +1690,7 @@ sub insert_mail {
     $in_reply_to=$1;
   }
 
-  $sth->bind_param(++$bp, substr(encode_dbtxt($msg_id),0,100));
+  $sth->bind_param(++$bp, encode_dbtxt($msg_id));
 
   $sth->bind_param (++$bp, $thread_id);
 
