@@ -255,7 +255,7 @@ sub import_mailfiles {
       }
       my %ctxt;
       my $fh;
-      if (open($fh, $proc_filename)) {
+      if (open($fh, "<:raw", $proc_filename)) {
 	$ctxt{'filename'} = $fname;
 	$ctxt{'filesize'} = $st->size;
 	$ctxt{'proc_filename'} = $proc_filename;
@@ -597,7 +597,7 @@ sub main_multi {
       my $st=stat($fname) or die "$fname: $!";
       my $str_file_date=strftime("%Y-%m-%d %H:%M:%S", localtime($st->mtime));
       my $fh;
-      open($fh, $fname) or die "$fname: $!\n";
+      open($fh, "<:raw", $fname) or die "$fname: $!\n";
       my %ctxt;
       $ctxt{'filename'}=$fname;
       $ctxt{'filesize'} = $st->size;
@@ -625,7 +625,7 @@ sub main_multi {
       }
       my $st=stat($fname) or die "$fname: $!";
       my $str_file_date=strftime("%Y-%m-%d %H:%M:%S", localtime($st->mtime));
-      open(my $fh, "<", $fname) or die "$fname: $!\n";
+      open(my $fh, "<:raw", $fname) or die "$fname: $!\n";
       my %ctxt;
       $ctxt{'filename'}=$fname;
       $ctxt{'filesize'} = $st->size;
@@ -723,7 +723,7 @@ sub main_multi {
 		}
 		else {
 		  my $fh;
-		  if (open($fh, $dest_inbox)) {
+		  if (open($fh, "<:raw", $dest_inbox)) {
 		    while(1) {
 		      my ($tmpname) = extract_mbox_tmpfile(\$fh);
 		      last if (!$tmpname);
@@ -906,7 +906,7 @@ sub import_database_mailbox {
     close($fh);
 
     my $st=stat($filename);
-    if (!open($fh,"$filename")) {
+    if (!open($fh, "<:raw", "$filename")) {
       error_log("Unable to open $filename: $!");
       $result=0;
       last;
@@ -1883,7 +1883,7 @@ sub redirect {
 
   my $top;
   if (defined $args->{mailfile}) {
-    if (!open($fh, $args->{mailfile})) {
+    if (!open($fh, "<:raw", $args->{mailfile})) {
       print STDERR "Unable to open ".$args->{mailfile}.": $!\n";
       return 0;
     }
@@ -2072,6 +2072,7 @@ sub send_one_mail {
     $SIG{'PIPE'} = 'IGNORE';
     my $pid = open3($in, $out, $err, $cmd);
     die $! if ($pid==0);
+    binmode($in);
     $top->print($in) or die $!;
     close($in);
     $top->purge;
