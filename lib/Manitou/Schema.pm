@@ -1097,6 +1097,8 @@ sub upgrade_schema_statements {
 		 "ALTER TABLE addresses ALTER COLUMN email_addr TYPE text");
     push @stmt, ("ALTER TABLE identities ADD root_tag integer REFERENCES tags(tag_id)",
 		 "ALTER TABLE identities ADD restricted bool DEFAULT false");
+    # Update mail.message_id in case it was still varchar(N)
+    push @stmt, "ALTER TABLE mail ALTER COLUMN message_id TYPE text";
   }
   return @stmt;
 }
