@@ -668,7 +668,7 @@ sub main_multi {
 
     $global_end=0;
     $mail_id=0;
-    my $last_alive;
+    my $last_alive = time;
     my $alive_interv=getconf('alive_interval');
     update_runtime_timestamp("last_alive") if ($alive_interv && getconf_bool("update_runtime_info"));
 
@@ -755,14 +755,12 @@ sub main_multi {
 	$last_checked_outgoing=time;
       }
 
-      my $t=time;
-      if (getconf_bool("update_runtime_info")) {
-	if ($alive_interv && $t>=$last_alive+$alive_interv) {
-	  # confirm that we're running
-	  update_runtime_timestamp("last_alive");
-	  # refresh $t too since the above update may have been locked during some time
-	  $t = $last_alive = time;
-	}
+      my $t = time;
+      if ($alive_interv && $t>=$last_alive+$alive_interv) {
+	# confirm that we're running
+	update_runtime_timestamp("last_alive") if (getconf_bool("update_runtime_info"));
+	# refresh $t too since the above update may have been locked during some time
+	$t = $last_alive = time;
       }
 
       Manitou::Jobs::check_end_jobs($dbh);
