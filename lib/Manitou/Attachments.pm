@@ -377,7 +377,7 @@ sub launch_text_extractors {
       eval {
 	$SIG{'PIPE'} = 'IGNORE';
 	my $pid = open3($in, $out, $err, $cmd) or die $!;
-	binmode $out, ':utf8';
+	binmode $out, ':raw';
 	$out->blocking(0);
 	my $bits;
 	vec($bits, fileno($out), 1)=1;
@@ -385,25 +385,29 @@ sub launch_text_extractors {
 	my $content_size = $row->{content_size};
 	my $lobj_fd = $dbh->func($row->{content}, $dbh->{pg_INV_READ}, 'lo_open');
 	die $dbh->errstr if (!defined $lobj_fd);
-	my $buf;
-	my $nbytes;
+	my $octets;
 	while ($content_size>0) {
-	  $nbytes = $dbh->func($lobj_fd, $buf, $content_size>524288 ? 524288:$content_size, 'lo_read');
+	  my $buf;
+	  my $nbytes = $dbh->func($lobj_fd, $buf, $content_size>524288 ? 524288:$content_size, 'lo_read');
 	  die $dbh->errstr if (!defined $nbytes);
 	  $content_size -= $nbytes;
 	  # Send to script
 	  print $in $buf;
+	  # read the output of the extractor during execution
+	  # to avoid too much buffering
 	  while (select(undef, $bits, undef, 0.2)) {
-	    # read the output of the extractor during execution
-	    # to avoid too much buffering
-	    $$ref_text.=<$out>;
+	    # using FB_QUIET and not clobbering $octets between calls
+	    # should let the decoder process partial multibyte characters.
+	    $octets .= <$out>;
+	    $$ref_text .= Encode::decode('UTF-8', $octets, Encode::FB_QUIET);
 	  }
 	}
 	$dbh->func($lobj_fd, 'lo_close');
 	close($in);
 	$out->blocking(1);
 	while (<$out>) {
-	  $$ref_text .=$_;
+	  $octets .= $_;
+	  $$ref_text .= Encode::decode('UTF-8', $octets, Encode::FB_QUIET);
 	}
 	waitpid($pid, 0);
       };
