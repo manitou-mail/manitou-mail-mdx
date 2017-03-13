@@ -1094,11 +1094,14 @@ sub upgrade_schema_statements {
   elsif ($from eq "1.5.0" && $to eq "1.6.0") {
     push @stmt, $functions{"object_permissions"};
     push @stmt, ("ALTER TABLE addresses ALTER COLUMN name TYPE text",
-		 "ALTER TABLE addresses ALTER COLUMN email_addr TYPE text");
+		 "ALTER TABLE addresses ALTER COLUMN email_addr TYPE text",
+		 "ALTER TABLE addresses ALTER COLUMN nickname TYPE text");
     push @stmt, ("ALTER TABLE identities ADD root_tag integer REFERENCES tags(tag_id)",
 		 "ALTER TABLE identities ADD restricted bool DEFAULT false");
     # Update mail.message_id in case it was still varchar(N)
     push @stmt, "ALTER TABLE mail ALTER COLUMN message_id TYPE text";
+    push @stmt, $tables{"identities_permissions"};
+    push @stmt, $functions{"set_identity_permissions"};
   }
   return @stmt;
 }
