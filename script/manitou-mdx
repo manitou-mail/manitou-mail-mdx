@@ -1917,7 +1917,9 @@ sub redirect {
 }
 
 sub send_one_mail {
-  my ($from, $subject, $mail_id) = @_;
+  my ($from, $subject, $mail_id, $job_id) = @_;
+  # job_id is set for scheduled messages
+  # the job entry is deleted as soon as the message is sent.
   my $decl_charset = getconf("preferred_charset", $from) || 'iso-8859-1';
   my @charsets = split(/\s+/, $decl_charset);
 
@@ -2008,6 +2010,11 @@ sub send_one_mail {
     $top->head->replace("Bcc", $bcc);
   }
 
+  if (defined $job_id) {
+    # for scheduled deliveries, replace the Date header with the
+    # current date and time
+    Manitou::MailFormat::add_date_header($top);
+  }
   attach_parts($dbh, $mail_id, $top, getconf("tmpdir"));
 
   my @opl;
@@ -2087,10 +2094,10 @@ sub send_one_mail {
       error_log("Local delivery agent error: (\`$cmd\`, exit code=".($?>>8)."): $e");
     }
     else {
-      # Set the SENT and ARCHIVED status bits
-      my $sths = $dbh->prepare("UPDATE mail SET status=status|(256+32),sender_date=now() WHERE mail_id=?");
-      $sths->execute($mail_id);
-      $sths->finish;
+      # Set the SENT and ARCHIVED status bits. Clear SCHEDULED.
+      $dbh->do("UPDATE mail SET status=(status|(256+32))&(~1024),sender_date=now() WHERE mail_id=?",
+	  {}, $mail_id);
+      $dbh->do("DELETE FROM jobs_queue WHERE job_id=?",{}, $job_id) if (defined $job_id);
       $ret=1; # OK
     }
   }
@@ -2129,17 +2136,35 @@ sub get_delivery_agent {
 }
 
 sub send_mails {
-  my $sth1 = $dbh->prepare("SELECT mail_id FROM mail_status WHERE status=129");
+  my $sched_bit=1024;	# bitmask for "send later"
+  my $sth1 = $dbh->prepare("SELECT mail_id FROM mail_status WHERE (status=129 OR status=129+$sched_bit)");
   $sth1->execute;
   my @res;
+  my $sth_job;
   while (@res = $sth1->fetchrow_array) {
     my $mail_id=$res[0];
     next if (exists $hsend_blocked{$mail_id});
-    my $sth = $dbh->prepare("SELECT sender,subject FROM mail WHERE mail_id=? AND status=129");
+    my $sth = $dbh->prepare("SELECT sender,subject,status FROM mail WHERE mail_id=?");
     $sth->execute($mail_id);
     my @row;
-    while (@row = $sth->fetchrow_array) {
-      if (send_one_mail($row[0], $row[1], $mail_id)) {
+    while (my ($sender,$subject,$status) = $sth->fetchrow_array) {
+      my $job_id;
+      my $sched_time;  # timestamp as seconds since epoch
+      if ($status == 129+$sched_bit) {
+	if (!defined $sth_job) {   # prepare the query only if needed
+	  $sth_job = $dbh->prepare("SELECT job_id,job_args FROM jobs_queue WHERE mail_id=? AND job_type=?");
+	}
+	$sth_job->execute($mail_id, "send_mail");
+	($job_id, $sched_time) = $sth_job->fetchrow_array;
+	# check if the scheduled time is reached
+	next if ( ! ($sched_time =~ /^[0-9]+$/ && $sched_time <= time()) );
+      }
+      elsif ($status != 129) {
+	# If the status has changed since the initial fetch (when other messages
+	# were sent in the loop), ignore the message.
+	next;
+      }
+      if (send_one_mail($sender, $subject, $mail_id, $job_id)) {
 	update_runtime_timestamp("last_sent") if getconf_bool("update_runtime_info", $row[0]);
 	notice_log("Sent outgoing message #$mail_id");
 	my $nb_blocked = scalar (keys %hsend_blocked);
