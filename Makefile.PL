@@ -9,7 +9,7 @@ my %opts = (
    AUTHOR => 'Daniel Verite (daniel@manitou-mail.org)',
    ABSTRACT => 'Perl mail-database exchanger for the Manitou-Mail software',
    NAME => 'manitou-mdx',
-   VERSION => '1.6.0',
+   VERSION => '1.7.0',
    EXE_FILES => [ qw(script/manitou-mdx script/manitou-mgr script/manitou-spool) ],
    PREREQ_PM => { 'Getopt::Long' => 2.00,
 		  'IO' => 0,

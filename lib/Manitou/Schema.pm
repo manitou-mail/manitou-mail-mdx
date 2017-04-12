@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2016 Daniel Verite
+# Copyright (C) 2004-2017 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -30,12 +30,12 @@ require Exporter;
 		partition_words);
 
 sub current_version {
-  return "1.6.0";
+  return "1.7.0";
 }
 
 sub supported_versions {
   return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0",
-	  "1.3.1", "1.4.0", "1.5.0", "1.6.0");
+	  "1.3.1", "1.4.0", "1.5.0", "1.6.0", "1.7.0");
 }
 
 my $create_script=<<EOF;
