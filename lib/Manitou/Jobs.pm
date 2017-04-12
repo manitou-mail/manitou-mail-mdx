@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2017 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -16,6 +16,10 @@
 # Foundation, Inc., 59 Temple Place - Suite 330,
 # Boston, MA 02111-1307, USA.
 
+
+
+# Process asynchronous (forked) jobs
+
 package Manitou::Jobs;
 
 use strict;
@@ -32,7 +36,7 @@ use Manitou::Mailing;
 
 my %active_pids;
 
-sub process_jobs_queue {
+sub process_async_jobs_queue {
   my $dbh=shift;
   my $sth=$dbh->prepare("SELECT job_id,job_type,job_args FROM jobs_queue WHERE job_type='mailing'");
   $sth->execute;
@@ -45,7 +49,7 @@ sub process_jobs_queue {
   }
 }
 
-sub check_end_jobs {
+sub check_end_async_jobs {
   my $dbh=shift;
   if (scalar(%active_pids)>0) {
     my $pid;

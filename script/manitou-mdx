@@ -763,10 +763,10 @@ sub main_multi {
 	$t = $last_alive = time;
       }
 
-      Manitou::Jobs::check_end_jobs($dbh);
+      Manitou::Jobs::check_end_async_jobs($dbh);
       if ($last_checked_jobs+5 < $t) {
 	$last_checked_jobs = $t;
-        Manitou::Jobs::process_jobs_queue($dbh);
+        Manitou::Jobs::process_async_jobs_queue($dbh);
         check_new_jobs();
       }
 
