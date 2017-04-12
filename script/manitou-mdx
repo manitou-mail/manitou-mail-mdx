@@ -2088,7 +2088,7 @@ sub send_one_mail {
     }
     else {
       # Set the SENT and ARCHIVED status bits
-      my $sths = $dbh->prepare("UPDATE mail SET status=status|(256+32) WHERE mail_id=?");
+      my $sths = $dbh->prepare("UPDATE mail SET status=status|(256+32),sender_date=now() WHERE mail_id=?");
       $sths->execute($mail_id);
       $sths->finish;
       $ret=1; # OK
