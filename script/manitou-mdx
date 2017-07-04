@@ -1194,16 +1194,22 @@ sub import_message_2 {
   $parser->output_to_core(20000);
   $parser->parse_nested_messages(0);
 
-  # check if it'gzip'ed
-  my $header2;
-  my $rd2=read($mail_handle, $header2, 2);
-  seek $mail_handle, 0, SEEK_SET;
-  if ($rd2==2 && $header2 eq "\x1f\x8b") {
-    my $gzfh=new IO::Uncompress::Gunzip $mail_handle
-      or die "IO::Uncompress::Gunzip failed: $GunzipError";
+  # check the start for a gzip header or an utf-8 BOM
+  my $header3;
+  my $rd3 = read($mail_handle, $header3, 3);
+  if ($rd3==3 && $header3 eq "\xef\xbb\xbf") {
+    # utf-8 BOM at the start: just skip it
+    $top = $parser->read($mail_handle);
+  }
+  elsif ($rd3=>2 && substr($header3,0,2) eq "\x1f\x8b") {
+    # gzipped file
+    seek $mail_handle, 0, SEEK_SET;
+    $gzfh = new IO::Uncompress::Gunzip $mail_handle
+	or die "IO::Uncompress::Gunzip failed: $GunzipError";
     $top = $parser->read($gzfh);
   }
   else {
+    seek $mail_handle, 0, SEEK_SET;
     $top = $parser->read($mail_handle);
   }
 
@@ -2137,7 +2143,9 @@ sub get_delivery_agent {
 
 sub send_mails {
   my $sched_bit=1024;	# bitmask for "send later"
-  my $sth1 = $dbh->prepare("SELECT mail_id FROM mail_status WHERE (status=129 OR status=129+$sched_bit)");
+  # Use "status&32=0" to select non-archived messages and benefit
+  # from the partial index on this expression
+  my $sth1 = $dbh->prepare("SELECT mail_id FROM mail WHERE status&32=0 AND (status=129 OR status=129+$sched_bit)");
   $sth1->execute;
   my @res;
   my $sth_job;
