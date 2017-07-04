@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2016 Daniel Verite
+# Copyright (C) 2004-2017 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -23,7 +23,7 @@ use vars qw(@ISA @EXPORT_OK);
 
 use File::stat;
 use Carp;
-use POSIX qw(tmpnam);
+use File::Temp qw(tempfile);
 use Encode;
 use Manitou::Encoding qw(encode_dbtxt header_decode);
 use Manitou::Log qw(error_log warning_log);
@@ -141,11 +141,10 @@ sub insert_attachment {
   my ($dbh, $mail_id, $mime_obj) = @_;
   my $attachment_id = get_sequence_nextval($dbh, "seq_attachment_id");
   my $lobjId;
-  my $attch_file=tmpnam();
-  open(PGIN, ">$attch_file") or die "can not open $attch_file: $!";
-  binmode PGIN;
-  $mime_obj->bodyhandle->print(\*PGIN);
-  close(PGIN);
+  my ($pgin, $attch_file) = tempfile();
+  binmode($pgin);
+  $mime_obj->bodyhandle->print($pgin);
+  close($pgin);
   my $filesize = stat($attch_file)->size;
 
   my $stha = $dbh->prepare("INSERT INTO attachments(attachment_id,mail_id,content_type,content_size,filename,charset,mime_content_id) VALUES (?,?,?,?,?,?,?)")  or die $dbh->errstr;
@@ -187,9 +186,9 @@ sub insert_attachment {
   if ($filesize>0) {
     # compute the fingerprint
     my $sha1 = Digest::SHA->new("SHA-1");
-    open(PGIN, "$attch_file") or die "can not open $attch_file: $!";
-    binmode PGIN;
-    $sha1->addfile(*PGIN);
+    open(my $pginr, "<", "$attch_file") or die "can not open $attch_file: $!";
+    binmode($pginr);
+    $sha1->addfile($pginr);
     my $fingerprint = $sha1->b64digest;
     # check if the content already exists in the database
     my $sth1=$dbh->prepare("SELECT content FROM attachment_contents WHERE fingerprint=? LIMIT 1");
