@@ -41,7 +41,7 @@ sub supported_versions {
 my $create_script=<<EOF;
 CREATE TABLE identities (
   identity_id INT primary key default nextval('seq_identity_id'),
-  email_addr TEXT NOT NULL,
+  email_addr TEXT NOT NULL UNIQUE,
   username TEXT,
   xface TEXT,
   signature TEXT,
@@ -1102,6 +1102,9 @@ sub upgrade_schema_statements {
     push @stmt, "ALTER TABLE mail ALTER COLUMN message_id TYPE text";
     push @stmt, $tables{"identities_permissions"};
     push @stmt, $functions{"set_identity_permissions"};
+  }
+  elsif ($from eq "1.6.0" && $to eq "1.7.0") {
+    push @stmt, "ALTER TABLE identities ADD CONSTRAINT identities_email_addr_key UNIQUE(email_addr)";
   }
   return @stmt;
 }
