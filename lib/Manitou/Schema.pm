@@ -81,12 +81,6 @@ CREATE TABLE notes (
 );
 CREATE UNIQUE INDEX notes_idx ON notes(mail_id);
 
-CREATE TABLE mail_status (
-  mail_id int,
-  status int
-);
-CREATE UNIQUE INDEX pk_mail_status_idx ON mail_status(mail_id);
-
 CREATE TABLE header (
  mail_id  INT REFERENCES mail(mail_id),
  lines  TEXT
@@ -382,56 +376,6 @@ my %object_comments=(
 );
 
 my %functions=(
-"insert_mail" => <<'EOFUNCTION'
-CREATE OR REPLACE FUNCTION insert_mail() RETURNS TRIGGER AS $$
-BEGIN
-	IF NEW.status&(256+32+16)=0 THEN
-	  -- The message is not yet sent, archived, or trashed
-	  INSERT INTO mail_status(mail_id,status) VALUES(new.mail_id,new.status);
-	END IF;
-	RETURN new;
-END;
-$$ LANGUAGE 'plpgsql'
-EOFUNCTION
-,
-
-"update_mail" => <<'EOFUNCTION'
-CREATE OR REPLACE FUNCTION update_mail() RETURNS TRIGGER AS $$
-DECLARE
- rc int4;
-BEGIN
-   IF new.status!=old.status THEN
-	IF NEW.status&(256+32+16)=0 THEN
-	  -- The message is not yet sent, archived, or trashed
-	  UPDATE mail_status
-	    SET status = new.status
-	   WHERE mail_id = new.mail_id;
-	  GET DIAGNOSTICS rc = ROW_COUNT;
-	  if rc=0 THEN
-	    INSERT INTO mail_status(mail_id,status) VALUES(new.mail_id,new.status);
-	  END IF;
-	ELSE
-	  -- The mail has been "processed"
-	  DELETE FROM mail_status
-	   WHERE mail_id = new.mail_id;
-	END IF;
-   END IF;
-   RETURN new;
-END;
-$$ LANGUAGE 'plpgsql'
-EOFUNCTION
-,
-
-"delete_mail" => <<'EOFUNCTION'
-CREATE OR REPLACE FUNCTION delete_mail() RETURNS TRIGGER AS $$
-BEGIN
-	DELETE FROM mail_status WHERE mail_id=OLD.mail_id;
-	RETURN old;
-END;
-$$ LANGUAGE 'plpgsql'
-EOFUNCTION
-,
-
 "delete_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION delete_msg(integer) RETURNS integer AS $$
 DECLARE
@@ -531,6 +475,19 @@ $$ language sql
 EOFUNCTION
 ,
 
+"status_mask" => <<'EOFUNCTION'
+CREATE OR REPLACE FUNCTION status_mask(text) returns int as $$
+  select case $1
+  when 'archived' then 32
+  when 'read' then 1
+  when 'replied' then 4
+  when 'sent' then 256
+  else null
+  end
+$$ language sql immutable;
+EOFUNCTION
+,
+
 "trash_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION trash_msg(in_mail_id integer, in_op integer) RETURNS integer AS $$
 DECLARE
@@ -588,21 +545,21 @@ DECLARE
  tbl_ro text[]:='{
       "addresses", "attachment_contents", "attachments",
       "body", "config", "header", "identities", "identities_permissions",
-      "mail", "mail_addresses", "mail_status", "mail_tags",
+      "mail", "mail_addresses", "mail_tags",
       "notes", "runtime_info", "tags", "users", "user_queries" }';
 
  -- the tables that need to be UPDATE'able for a read-write user
  tbl_upd text[]:='{
       "addresses", "attachment_contents", "attachments",
       "body", "config", "header", "mail",
-      "mail_addresses", "mail_status", "mail_tags",
+      "mail_addresses", "mail_tags",
       "notes" }';
 
  -- the tables that need to be DELETE'able for a deleter
  tbl_del text[]:='{
       "attachment_contents", "attachments",
       "body", "header", "mail",
-      "mail_addresses", "mail_status", "mail_tags",
+      "mail_addresses", "mail_tags",
       "notes", "raw_mail"   }';
 BEGIN
   IF ability = 'read' THEN
@@ -896,18 +853,8 @@ EOFUNCTION
 );
 
 my %triggers=(
- "update_mail" => q{CREATE TRIGGER update_mail AFTER UPDATE ON mail
- FOR EACH ROW EXECUTE PROCEDURE update_mail()},
-
- "insert_mail" => q{CREATE TRIGGER insert_mail AFTER INSERT ON mail
- FOR EACH ROW EXECUTE PROCEDURE insert_mail()},
-
- "delete_mail" => q{CREATE TRIGGER delete_mail AFTER DELETE ON mail
- FOR EACH ROW EXECUTE PROCEDURE delete_mail()},
-
  "update_note" => q{CREATE TRIGGER update_note AFTER INSERT OR DELETE ON notes
  FOR EACH ROW EXECUTE PROCEDURE update_note_flag()}
-
 );
 
 sub extract_statements {
@@ -1105,7 +1052,15 @@ sub upgrade_schema_statements {
   }
   elsif ($from eq "1.6.0" && $to eq "1.7.0") {
     push @stmt, "ALTER TABLE identities ADD CONSTRAINT identities_email_addr_key UNIQUE(email_addr)";
+    push @stmt, "CREATE INDEX current_mail_idx ON mail(status) WHERE status&32=0";
+    push @stmt, "DROP TRIGGER insert_mail ON mail";
+    push @stmt, "DROP TRIGGER update_mail ON mail";
+    push @stmt, "DROP TRIGGER delete_mail ON mail";
+    push @stmt, $functions{"object_permissions"};  # updated to drop references to mail_status
+    push @stmt, $functions{"status_mask"};
+    push @stmt, "DROP TABLE mail_status";
   }
+
   return @stmt;
 }
 
