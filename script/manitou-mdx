@@ -86,6 +86,7 @@ my %postprocess_plugins;
 my %mimeprocess_plugins;
 my %outgoing_plugins;
 my @maintenance_plugins;
+my @maintenance_tasks;
 
 my %loaded_plugins;
 
@@ -106,8 +107,7 @@ STDERR->autoflush(1);
 
 main_multi();
 
-# Write the current time into the runtime_info table to tell we're
-# currently running
+# Update runtime information for external monitoring
 sub update_runtime_timestamp {
   local $dbh->{AutoCommit}=1;
   my ($key)=@_;
@@ -479,6 +479,7 @@ sub main_multi {
 
   init_identities();
   init_plugins();
+  init_maintenance_tasks();
   load_stopwords($dbh);
 
   # Build the list of directories where mailfiles are to be looked for
@@ -668,9 +669,10 @@ sub main_multi {
 
     $global_end=0;
     $mail_id=0;
-    my $last_alive = time;
-    my $alive_interv=getconf('alive_interval');
-    update_runtime_timestamp("last_alive") if ($alive_interv && getconf_bool("update_runtime_info"));
+
+    if (getconf_bool("update_runtime_info") && getconf('alive_interval')) {
+      update_runtime_timestamp("last_alive")
+    }
 
     my $in_interv=getconf("incoming_check_interval");
     my $out_interv=getconf("outgoing_check_interval");
@@ -756,12 +758,6 @@ sub main_multi {
       }
 
       my $t = time;
-      if ($alive_interv && $t>=$last_alive+$alive_interv) {
-	# confirm that we're running
-	update_runtime_timestamp("last_alive") if (getconf_bool("update_runtime_info"));
-	# refresh $t too since the above update may have been locked during some time
-	$t = $last_alive = time;
-      }
 
       Manitou::Jobs::check_end_async_jobs($dbh);
       if ($last_checked_jobs+5 < $t) {
@@ -772,15 +768,14 @@ sub main_multi {
 
       # compute the minimum lapse of time before we'll need to
       # do something, and then sleep that amount of time
-      my ($mplugin,$maint_when) = check_maintenance_schedule($t);
+      my ($mtask,$maint_when) = check_maintenance_schedule($t);
 
       while ($maint_when && $maint_when<=$t) {
-	run_maint_plugin($mplugin);
-	($mplugin,$maint_when) = check_maintenance_schedule($t);
+	run_maintenance_task($mtask);
+	($mtask,$maint_when) = check_maintenance_schedule($t);
       }
       my $nx_act=min($last_checked_incoming+$in_interv,
 		     $last_checked_outgoing+$out_interv);
-      $nx_act = min($nx_act, $last_alive+$alive_interv) if ($alive_interv);
       $nx_act = min($nx_act, $maint_when) if ($maint_when);
 
       my $widx_size=Manitou::Words::queue_size();
@@ -953,14 +948,14 @@ sub import_database_mailbox {
   return $result;
 }
 
-# Returns the timestamp at which the maintenance plugin $p should be run
+# Returns the timestamp at which the maintenance task $p should be run
 # after the timestamp $now. The result must be >$now
 sub next_maint_run {
-  my ($p,$now)=@_;
+  my ($p,$now) = @_;
   if ($p->{frequency_type} eq "interval") {
     return $now+$p->{frequency}*60;
   }
-  elsif ($p->{frequency_type} eq "pit") {
+  elsif ($p->{frequency_type} eq "pit") { # point in time
     my ($h,$mn)=split /:/, $p->{frequency};
     my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
       localtime($now);
@@ -1010,7 +1005,7 @@ sub check_maintenance_schedule {
   my ($now)=@_;
   my $tmin=0;
   my $pmin;
-  for my $p (@maintenance_plugins) {
+  for my $p (@maintenance_tasks) {
     if (!$p->{next_run}) { # the plugin has never been run nor scheduled
       $p->{next_run} = next_maint_run($p,$now);
     }
@@ -1026,16 +1021,21 @@ sub check_maintenance_schedule {
   return 0;
 }
 
-sub run_maint_plugin {
-  my ($p)=@_;
+sub run_maintenance_task {
+  my ($p) = @_;
   my %ctxt;
-  $ctxt{'dbh'}=$dbh;
-  $ctxt{'stage'}="maintenance";
+  $ctxt{'dbh'} = $dbh;
+  $ctxt{'stage'} = "maintenance";
   $ctxt{'notice_log'} = \&notice_log;
   $ctxt{'error_log'} = \&error_log;
-  notice_log("Running maintenance plugin: $p->{name}");
-  $p->process(\%ctxt);
-  $p->{next_run}=next_maint_run($p, time);
+  if ($p->{type} eq "plugin") {
+    notice_log("Running maintenance plugin: $p->{plugin}->{name}");
+    $p->{plugin}->process(\%ctxt);
+  }
+  else {
+    $p->{internal_task}->{process}(\%ctxt);
+  }
+  $p->{next_run} = next_maint_run($p, time);
 }
 
 sub init_temp_dir {
@@ -2300,6 +2300,36 @@ sub init_plugins {
 	}
   }
 }
+
+sub init_maintenance_tasks {
+  # maintenance_tasks unifies user-defined maintenance plugins and
+  # internal maintenance tasks
+  foreach (@maintenance_plugins) {
+    my $task = {
+      type => "plugin",
+      plugin => $_,
+      frequency => $_->{frequency},
+      frequency_type => $_->{frequency_type},
+    };
+    push @maintenance_tasks, $task;
+  }
+
+  # Create a task for updating "last_alive" entry in runtime_info
+  if (getconf_bool("update_runtime_info")) {
+    my $alive_secs = getconf("alive_interval");
+    if ($alive_secs > 0) {
+      push @maintenance_tasks, {
+	type => "internal_task",
+	frequency => ($alive_secs+59)/60, # round up to a minute
+	frequency_type => "interval",
+	internal_task => {
+	  process => sub { update_runtime_timestamp("last_alive"); }
+	}
+      }
+    }
+  }
+}
+
 
 # Assign its identity_id field to each mbox_conf entry
 # If entries are missing in the MAILBOXES table, insert them
