@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2016 Daniel Verite
+# Copyright (C) 2004-2017 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -26,7 +26,7 @@ use Carp;
 use Manitou::Encoding qw(decode_dbtxt encode_dbtxt);
 
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(action_tag flattened_tag_name);
+@EXPORT_OK = qw(assign_tags flattened_tag_name consolidate_tags_counts);
 
 sub get_sequence_nextval {
   my ($dbh, $seq) = @_;
@@ -43,10 +43,23 @@ sub get_sequence_nextval {
   return $nextval;
 }
 
-sub action_tag {
-  my ($dbh, $mail_id, $tag_id) = @_;
-  my $sth=$dbh->prepare("INSERT INTO mail_tags(mail_id,tag) SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM mail_tags WHERE mail_id=? AND tag=?)");
-  $sth->execute($mail_id, $tag_id, $mail_id, $tag_id);
+# Input: dbh, mail_id, list of tag_id
+sub assign_tags {
+  my $dbh = shift;
+  my $mail_id = shift;
+  return if (!@_);  # empty list
+
+  # deduplicate tag IDs, sort them, and format as a VALUES list
+  my %seen;
+  my @arr = sort { $a <=> $b } grep !$seen{$_}++, @_;
+  # my $values = join ",", map { "($_)" } @arr;
+  my $tags_array = "{" . (join ",", @arr) . "}";
+
+  my $sth = $dbh->prepare("INSERT INTO mail_tags(mail_id,tag) SELECT ?,t FROM unnest(?::int[]) AS s(t)");
+  $sth->execute($mail_id, $tags_array);
+  # update main counters
+  my $sth1 = $dbh->prepare("UPDATE tags_counters SET cnt=cnt+1 WHERE temp=false AND tag_id=ANY(?::int[])");
+  $sth1->execute($tags_array);
 }
 
 
@@ -117,18 +130,23 @@ sub create_tag_hierarchy {
   }
 }
 
-sub insert_tag {
-  my ($dbh, $mail_id, $tagname) = @_;
+# Insert tags from a list of hierarchical names.
+# Duplicate names are permitted.
+# Possibly create the tags if some don't exist.
+sub insert_tags {
+  my ($dbh, $mail_id, @tagnames) = @_;
   my %tags;
   my %uc_tags;
   load_tags($dbh, \%tags, \%uc_tags);
-  my $tag_id=$uc_tags{uc($tagname)};
-  if (!$tag_id) {
-    $tag_id=create_tag_hierarchy($dbh, $tagname, \%uc_tags);
+  my @tag_ids;
+  for my $tagname (@tagnames) {
+    my $tag_id = $uc_tags{uc($tagname)};
+    if (!$tag_id) {
+      $tag_id = create_tag_hierarchy($dbh, $tagname, \%uc_tags);
+    }
+    push @tag_ids, $tag_id;
   }
-  if ($tag_id) {
-    action_tag($dbh, $mail_id, $tag_id);
-  }
+  assign_tags($dbh, $mail_id, @tag_ids);
 }
 
 # Returns the tag's full hierarchical name from its tag_id
@@ -153,6 +171,24 @@ sub tag_id_from_name {
   my %uc_tags;
   load_tags($dbh, \%tags, \%uc_tags);
   return $uc_tags{uc($tagname)};
+}
+
+sub consolidate_tags_counts {
+  my $dbh = shift;
+  local $dbh->{AutoCommit}=1;
+
+  # Sum and delete the temporary counts (temp=true), transferring them
+  # into the permanent counts (temp=false)
+  # Permanent counts should exist for all tags, otherwise temporary
+  # entries without a permanent counterpart are lost.
+
+  $dbh->do(qq{WITH d as
+    (delete from tags_counters where temp=true returning tag_id, cnt)
+      UPDATE tags_counters set cnt=cnt+s from
+        (select tag_id,sum(cnt) as s from d group by tag_id) sums
+      WHERE sums.tag_id=tags_counters.tag_id and temp=false
+    });
+
 }
 
 1;

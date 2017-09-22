@@ -60,7 +60,7 @@ use Manitou::Jobs;
 use Manitou::MailFormat;
 use Manitou::Words qw(load_stopwords index_words flush_word_vectors
 		     clear_word_vectors last_flush_time);
-use Manitou::Tags qw(action_tag);
+use Manitou::Tags qw(consolidate_tags_counts);
 use Manitou::Attachments qw(flatten_and_insert_attach
 			    detach_text_attachments
 			    attach_parts create_html_part has_attachments);
@@ -1385,14 +1385,13 @@ sub import_message_2 {
       # end of code block to mutualize
     }
 
+
     if ($mail_id>0 && defined $mail_ctxt->{'tags'}) {
-      for my $t (@{$mail_ctxt->{'tags'}}) {
-	Manitou::Tags::insert_tag($dbh, $mail_id, $t);
-      }
+      Manitou::Tags::insert_tags($dbh, $mail_id, @{$mail_ctxt->{'tags'}});
     }
 
     if ($mail_id>0 && defined $mail_ctxt->{tag_id}) {
-      Manitou::Tags::action_tag($dbh, $mail_id, $mail_ctxt->{tag_id});
+      Manitou::Tags::assign_tags($dbh, $mail_id, $mail_ctxt->{tag_id});
     }
   }
   else {
@@ -1714,12 +1713,10 @@ sub insert_mail {
       my @rt=$stht->fetchrow_array;
       if (@rt && $rt[0] eq "1") {
 	# Apply to the new mail the same tags as the message it replies to
-	my $sthtag=$dbh->prepare("SELECT tag FROM mail_tags WHERE mail_id=?");
+	my $sthtag = $dbh->prepare("SELECT tag FROM mail_tags WHERE mail_id=?");
 	$sthtag->execute($row[0]);
-	my @rttag;
-	while (@rttag=$sthtag->fetchrow_array) {
-	  action_tag($dbh, $mail_id, $rttag[0]);
-	}
+	my @rttag = $sthtag->fetchrow_array;
+	Manitou::Tags::assign_tags($dbh, $mail_id, @rttag);
       }
     }
   }
@@ -2066,12 +2063,11 @@ sub send_one_mail {
   $fctxt{tags}=();
   $fctxt{priority}=undef;
   if (getconf_bool("apply_filters", $from)) {
-      my $faction = apply_filters(\%fctxt, $top, \$db_body, "O");
-      # Apply filter actions to the database
-      for my $tag (@{$fctxt{'tags'}}) {
-	  Manitou::Tags::insert_tag($dbh, $mail_id, $tag);
-      }
-      # TODO: other filter actions (status, priority)
+    # Ignore the return value of apply_filters for outgoing mail
+    # (because filters can't cancel the sending)
+    apply_filters(\%fctxt, $top, \$db_body, "O");
+    # Apply filter actions to the database
+    Manitou::Tags::assign_tags($dbh, $mail_id, @{$fctxt{tags}}) if ($fctxt{tags});
   }
 
   # Pipe the message to the delivery agent
@@ -2325,8 +2321,20 @@ sub init_maintenance_tasks {
 	internal_task => {
 	  process => sub { update_runtime_timestamp("last_alive"); }
 	}
-      }
+      };
     }
+  }
+
+  # Create a task to consolidate tags counters
+  if (getconf_bool("materialize_tags_counts")) {
+    push @maintenance_tasks, {
+      type => "internal_task",
+      frequency => 1, # mn
+      frequency_type => "interval",
+      internal_task => {
+	process => sub { consolidate_tags_counts($dbh); }
+      }
+    };
   }
 }
 

@@ -356,6 +356,13 @@ CREATE TABLE import_message (
   mail_id int
 )
 EOT
+,"tags_counters" => <<'EOT'
+CREATE TABLE tags_counters (
+  tag_id integer references tags(tag_id) not null,
+  cnt integer,
+  temp boolean not null
+)
+EOT
 );
 
 my @ordered_tables = qw(
@@ -363,6 +370,7 @@ my @ordered_tables = qw(
   mail_template
   import_mbox import_message
   identities_permissions
+  tags_counters
 );
 
 
@@ -376,6 +384,54 @@ my %object_comments=(
 );
 
 my %functions=(
+"add_mail_tags" => <<'EOFUNCTION'
+CREATE OR REPLACE FUNCTION add_mail_tags(in_tag_id INT, in_mail_IDs INT[], OUT ignored int[])
+AS $$
+BEGIN
+  ignored := in_mail_IDs;
+
+ WITH v(mid) AS (
+  -- insert not-yet existing (tag,mail) tuples and return the set of inserted mail_id
+  INSERT INTO mail_tags(mail_id, tag)
+    SELECT t.mid, in_tag_id FROM unnest(in_mail_IDs) AS t(mid)
+    WHERE NOT EXISTS
+     (SELECT 1 FROM mail_tags WHERE tag=in_tag_id AND mail_id=t.mid)
+    RETURNING mail_id
+  ),
+  -- return the set of id_excl
+  id_excl(id) AS ( select t.id FROM unnest(in_mail_IDs) AS t(id) EXCEPT select mid FROM v),
+  -- insert the count deltas for the non-trashed messages
+  ins AS (INSERT INTO tags_counters(tag_id,cnt,temp)
+   SELECT in_tag_id, count(*), true FROM (select mail_id FROM v JOIN mail ON (mail_id=v.mid)
+     WHERE mail.status&(32+16)=32) AS s HAVING count(*)<>0)
+  --
+  SELECT array(SELECT id FROM id_excl)
+  INTO ignored;
+END
+$$ LANGUAGE plpgsql
+EOFUNCTION
+,
+"archive_msg_set" => <<'EOFUNCTION'
+CREATE or REPLACE FUNCTION archive_msg_set(in_mail_id int[], in_user_id int)
+ RETURNS TABLE(tag_id int, cnt int) as $$
+BEGIN
+ RETURN QUERY
+ WITH v(mid) AS (
+   UPDATE mail m SET status = status|32, mod_user_id = in_user_id
+     FROM unnest(in_mail_id) AS list(mid)
+    WHERE status&32 = 0
+     AND m.mail_id = list.mid
+    RETURNING list.mid
+ )
+ -- partial counters
+ INSERT INTO tags_counters(tag_id,cnt,temp)
+   SELECT tag, count(*), true FROM mail_tags JOIN v ON (mail_id=mid)
+     GROUP BY tag
+ RETURNING tags_counters.tag_id, tags_counters.cnt;
+END;
+$$ language plpgsql
+EOFUNCTION
+,
 "delete_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION delete_msg(integer) RETURNS integer AS $$
 DECLARE
@@ -467,7 +523,25 @@ END;
 $$ LANGUAGE plpgsql
 EOFUNCTION
 ,
-
+"remove_mail_tags" => <<'EOFUNCTION'
+CREATE OR REPLACE FUNCTION remove_mail_tags(in_tag_id INT,
+   in_mail_IDs INT[], OUT ignored int[])
+AS $$
+BEGIN
+  WITH v AS (
+    DELETE FROM mail_tags WHERE tag = in_tag_id AND mail_ID = ANY(in_mail_IDs)
+      RETURNING mail_id
+  ),
+  -- mail archived and non-trashed are subtracted from tags counters
+  ins AS (INSERT INTO tags_counters(tag_id,cnt,temp)
+   SELECT in_tag_id, -1*count(*), true FROM v JOIN mail USING(mail_id)
+      WHERE mail.status&(32+16)=32 HAVING count(*)<>0)
+  SELECT array(SELECT * FROM unnest(in_mail_IDs) EXCEPT SELECT v.mail_id FROM v)
+    INTO ignored;
+END
+$$ LANGUAGE plpgsql
+EOFUNCTION
+,
 "status_archived" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION status_archived(int) returns boolean as $$
  select $1&32=32 AND $1&16=0;
@@ -513,25 +587,27 @@ END;
 $$ LANGUAGE plpgsql
 EOFUNCTION
 ,
-
-"multi_trash_mail_tags" => <<'EOFUNCTION'
--- Update tags counters for messages that are archived and moving to the trashcan
-CREATE or REPLACE FUNCTION multi_trash_mail_tags(in_mail_id int[], in_user_id int)
- returns table(t int, c int) as $$
+"trash_msg_set_tags" => <<'EOFUNCTION'
+CREATE OR REPLACE FUNCTION trash_msg_set_tags(in_mail_id int[], in_user_id int)
+  RETURNS TABLE(tag_id int, cnt int) AS $$
 DECLARE
-  v_tag_id int;
-  v_mail_id int;
-  v_status int;
+cnt int;
 BEGIN
-     RETURN QUERY
-       INSERT INTO tags_archive_counters_queue(tag_id, cnt)
-         SELECT mt.tag,-1*count(*) FROM mail m LEFT JOIN mail_tags mt USING(mail_id)
-	  WHERE m.status&(32+16)=32 AND m.mail_id IN (select unnest(in_mail_id))
-	  GROUP BY mt.tag
-         RETURNING tag_id,cnt;
- -- END LOOP;
+ RETURN QUERY
+ WITH v(mid) AS (
+   UPDATE mail m SET status = status|16, mod_user_id = in_user_id
+     FROM unnest(in_mail_id) AS list(mid)
+    WHERE status&16 = 0
+     AND m.mail_id = list.mid
+    RETURNING list.mid
+ )
+ -- tags for messages in trashcan are discounted.
+ INSERT INTO tags_counters(tag_id,cnt,temp)
+   SELECT tag, -1*count(*), true FROM mail_tags JOIN v ON (mail_id=mid)
+     GROUP BY tag
+ RETURNING tags_counters.tag_id, tags_counters.cnt;
 END;
-$$ language plpgsql;
+$$ LANGUAGE plpgsql
 EOFUNCTION
 ,
 
@@ -657,7 +733,72 @@ BEGIN
 END $$ language plpgsql
 EOFUNCTION
 ,
+"transition_status_tags" => << 'EOFUNCTION'
+CREATE OR REPLACE FUNCTION transition_status_tags(in_mail_id integer, new_status integer)
+ RETURNS TABLE(cnt_tag_id integer, diff integer) AS
+$$
+DECLARE
+  ostatus int;
+BEGIN
+  IF new_status=-1 THEN  -- mail is to be deleted
+    RETURN QUERY
+      INSERT INTO tags_counters(tag_id, cnt, temp)
+	SELECT tag,-1,true FROM mail_tags WHERE mail_id = in_mail_id
+	RETURNING tag_id,-1;
+    RETURN;
+  END IF;
 
+  -- mail is not to be deleted
+  SELECT status INTO ostatus FROM mail WHERE mail_id = in_mail_id;
+  IF FOUND THEN
+    -- if (!archived)=>archived
+    IF (ostatus&32=0 AND new_status&32=32) THEN
+      IF (new_status&16=0) THEN
+        RETURN QUERY
+	  INSERT INTO tags_counters(tag_id, cnt, temp)
+	    SELECT tag,1,true FROM mail_tags WHERE mail_id = in_mail_id
+	    RETURNING tag_id,1;
+      END IF;
+    -- if archived=>(!archived and !trashed)
+    ELSIF (ostatus&32=32) AND (new_status&(32+16)=0) THEN
+      IF (ostatus&16=0) THEN
+        RETURN QUERY
+	  INSERT INTO tags_counters(tag_id, cnt, temp)
+	    SELECT tag,-1,true FROM mail_tags WHERE mail_id = in_mail_id
+	    RETURNING tag_id,-1;
+      END IF;
+    -- if (archived and !trashed)=>(archived and trashed)
+    ELSIF (ostatus&(32+16)=32) AND (new_status&(32+16)=32+16) THEN
+        RETURN QUERY
+	  INSERT INTO tags_counters(tag_id, cnt, temp)
+	    SELECT tag,-1,true FROM mail_tags WHERE mail_id = in_mail_id
+	    RETURNING tag_id,-1;
+    -- if (archived and trashed)=>(archived and !trashed)
+    ELSIF (ostatus&(32+16)=32+16) AND (new_status&(32+16)=32) THEN
+        RETURN QUERY
+	  INSERT INTO tags_counters(tag_id, cnt, temp)
+	    SELECT tag,1,true FROM mail_tags WHERE mail_id = in_mail_id
+	    RETURNING tag_id, 1;
+    END IF;
+  END IF;
+END;
+$$ language plpgsql
+EOFUNCTION
+,
+"update_tags_counters" => << 'EOFUNCTION'
+CREATE OR REPLACE FUNCTION update_tags_counters() RETURNS TRIGGER AS $$
+BEGIN
+  IF (TG_OP = 'DELETE') THEN
+    -- delete all tag counters (permanent and temp) for this tag
+    DELETE FROM tags_counters WHERE tag_id=OLD.tag_id;
+  ELSIF (TG_OP = 'INSERT') THEN
+    -- add new permanent tag counter for this tag
+    INSERT INTO tags_counters(tag_id,temp,cnt) VALUES(NEW.tag_id,false,0);
+  END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql
+EOFUNCTION
+,
 "untrash_msg" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION untrash_msg(in_mail_id int, in_op int) RETURNS int AS $$
 DECLARE
@@ -854,7 +995,9 @@ EOFUNCTION
 
 my %triggers=(
  "update_note" => q{CREATE TRIGGER update_note AFTER INSERT OR DELETE ON notes
- FOR EACH ROW EXECUTE PROCEDURE update_note_flag()}
+ FOR EACH ROW EXECUTE PROCEDURE update_note_flag()} ,
+ "update_tags" => q{CREATE TRIGGER tag_trigger AFTER INSERT OR DELETE ON tags
+ FOR EACH ROW EXECUTE PROCEDURE update_tags_counters()}
 );
 
 sub extract_statements {
@@ -1059,6 +1202,20 @@ sub upgrade_schema_statements {
     push @stmt, $functions{"object_permissions"};  # updated to drop references to mail_status
     push @stmt, $functions{"status_mask"};
     push @stmt, "DROP TABLE mail_status";
+
+    # materialized tags counts
+    push @stmt, $tables{"tags_counters"};
+    push @stmt, $functions{"add_mail_tags"};
+    push @stmt, $functions{"remove_mail_tags"};
+    push @stmt, $functions{"archive_msg_set"};
+    push @stmt, $functions{"trash_msg_set_tags"};
+    push @stmt, $functions{"transition_status_tags"};
+    push @stmt, q{INSERT INTO tags_counters(tag_id,cnt,temp)
+      SELECT tag_id,coalesce(cnt,0),false
+        FROM tags LEFT JOIN (select tag,count(*) AS cnt
+          FROM mail_tags JOIN mail USING(mail_id)
+            WHERE mail.status&(16+32)=32 GROUP BY tag) AS t
+       ON (tag=tag_id)};
   }
 
   return @stmt;
