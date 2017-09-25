@@ -558,7 +558,7 @@ CREATE OR REPLACE FUNCTION status_mask(text) returns int as $$
   when 'sent' then 256
   else null
   end
-$$ language sql immutable;
+$$ language sql immutable
 EOFUNCTION
 ,
 
@@ -1209,6 +1209,7 @@ sub upgrade_schema_statements {
     push @stmt, $functions{"remove_mail_tags"};
     push @stmt, $functions{"archive_msg_set"};
     push @stmt, $functions{"trash_msg_set_tags"};
+    push @stmt, $functions{"update_tags_counters"};
     push @stmt, $functions{"transition_status_tags"};
     push @stmt, q{INSERT INTO tags_counters(tag_id,cnt,temp)
       SELECT tag_id,coalesce(cnt,0),false
@@ -1216,6 +1217,7 @@ sub upgrade_schema_statements {
           FROM mail_tags JOIN mail USING(mail_id)
             WHERE mail.status&(16+32)=32 GROUP BY tag) AS t
        ON (tag=tag_id)};
+    push @stmt, $triggers{"update_tags"};
   }
 
   return @stmt;
