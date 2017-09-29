@@ -542,12 +542,6 @@ END
 $$ LANGUAGE plpgsql
 EOFUNCTION
 ,
-"status_archived" => <<'EOFUNCTION'
-CREATE OR REPLACE FUNCTION status_archived(int) returns boolean as $$
- select $1&32=32 AND $1&16=0;
-$$ language sql
-EOFUNCTION
-,
 
 "status_mask" => <<'EOFUNCTION'
 CREATE OR REPLACE FUNCTION status_mask(text) returns int as $$
