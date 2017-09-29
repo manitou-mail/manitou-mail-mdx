@@ -2099,6 +2099,11 @@ sub send_one_mail {
       # Set the SENT and ARCHIVED status bits. Clear SCHEDULED.
       $dbh->do("UPDATE mail SET status=(status|(256+32))&(~1024),sender_date=now() WHERE mail_id=?",
 	  {}, $mail_id);
+      if (getconf_bool("materialize_tags_counts")) {
+	$dbh->do(qq{UPDATE tags_counters tc SET cnt=cnt+1
+		     FROM mail_tags mt WHERE mt.mail_id=? AND mt.tag=tc.tag_id},
+		 {}, $mail_id);
+      }
       $dbh->do("DELETE FROM jobs_queue WHERE job_id=?",{}, $job_id) if (defined $job_id);
       $ret=1; # OK
     }
