@@ -2067,7 +2067,7 @@ sub send_one_mail {
     # (because filters can't cancel the sending)
     apply_filters(\%fctxt, $top, \$db_body, "O");
     # Apply filter actions to the database
-    Manitou::Tags::assign_tags($dbh, $mail_id, @{$fctxt{tags}}) if ($fctxt{tags});
+    Manitou::Tags::insert_tags($dbh, $mail_id, @{$fctxt{tags}}) if ($fctxt{tags});
   }
 
   # Pipe the message to the delivery agent
