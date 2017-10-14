@@ -22,6 +22,7 @@ use strict;
 
 require Encode;
 use Carp;
+use version;
 use MIME::Words qw(:all);
 
 require Exporter;
@@ -51,21 +52,31 @@ sub decode_dbtxt {
 sub get_db_encoding {
   my $dbh=shift;
   # determine how our version of DBD::Pg deals with utf-8 strings
-  $dbh->{pg_enable_utf8} = 0;
-  my $p = "\xc3\xa9";  # U+00C9 as an utf-8 octet sequence
-  my $sth = $dbh->prepare("SELECT ?,length(?),octet_length(?)",
-			  {pg_server_prepare=>0});
-  $sth->execute($p,$p,$p);
-  my @r = $sth->fetchrow_array;
-  if ($r[1]==1 && $r[2]==2) {
-    # keep it that way (pre DBD-3.0 behavior)
-    $pass_utf8_bytes = 1;
-    return;
-  }
-  else {
+
+  if (version->parse($DBD::Pg::VERSION) >= version->parse("3.6.0")) {
+    # DBD::Pg fixed the double-encoding utf-8 bug in version 3.6,
+    # so the SELECT below wouldn't discriminate properly.
+    # For versions >= 3.6.0, assume its utf-8 support does not require
+    # to pass strings as bytes.
     $dbh->{pg_enable_utf8} = 1;
     $pass_utf8_bytes = 0;
-
+  }
+  else {
+    $dbh->{pg_enable_utf8} = 0;
+    my $p = "\xc3\xa9";  # U+00C9 as an utf-8 octet sequence
+    my $sth = $dbh->prepare("SELECT ?,length(?),octet_length(?)",
+			    {pg_server_prepare=>0});
+    $sth->execute($p,$p,$p);
+    my @r = $sth->fetchrow_array;
+    if ($r[1]==1 && $r[2]==2) {
+      # keep it that way (pre DBD-3.0 behavior)
+      $pass_utf8_bytes = 1;
+      return;
+    }
+    else {
+      $dbh->{pg_enable_utf8} = 1;
+      $pass_utf8_bytes = 0;
+    }
   }
 }
 
