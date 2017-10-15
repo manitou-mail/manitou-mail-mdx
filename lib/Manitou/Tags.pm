@@ -24,6 +24,7 @@ require Exporter;
 use vars qw(@ISA @EXPORT_OK);
 use Carp;
 use Manitou::Encoding qw(decode_dbtxt encode_dbtxt);
+use Manitou::Config qw(getconf getconf_bool);
 
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(assign_tags flattened_tag_name consolidate_tags_counts);
@@ -55,11 +56,22 @@ sub assign_tags {
   # my $values = join ",", map { "($_)" } @arr;
   my $tags_array = "{" . (join ",", @arr) . "}";
 
-  my $sth = $dbh->prepare("INSERT INTO mail_tags(mail_id,tag) SELECT ?,t FROM unnest(?::int[]) AS s(t)");
-  $sth->execute($mail_id, $tags_array);
-  # update main counters
-  my $sth1 = $dbh->prepare("UPDATE tags_counters SET cnt=cnt+1 WHERE temp=false AND tag_id=ANY(?::int[])");
-  $sth1->execute($tags_array);
+  my $sth = $dbh->prepare(q{
+     WITH res(t) AS
+      (INSERT INTO mail_tags(mail_id,tag)
+        SELECT ?,t FROM unnest(?::int[]) AS s(t)
+         WHERE NOT EXISTS (SELECT 1 FROM mail_tags WHERE mail_id=? AND tag=t)
+       RETURNING tag)
+     SELECT array_agg(t) FROM res
+  });
+  $sth->execute($mail_id, $tags_array, $mail_id);
+  my @r = $sth->fetchrow_array;
+  $sth->finish;
+  if (defined $r[0] && getconf_bool("materialize_tags_counts")) {
+    # update main counters
+    my $sth1 = $dbh->prepare("UPDATE tags_counters SET cnt=cnt+1 WHERE temp=false AND tag_id=ANY(?::int[]) AND EXISTS (SELECT 1 FROM mail WHERE mail_id=? AND status&(32+16)=32)");
+    $sth1->execute($r[0], $mail_id);
+  }
 }
 
 
