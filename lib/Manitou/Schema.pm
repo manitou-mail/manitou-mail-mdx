@@ -593,11 +593,13 @@ BEGIN
      FROM unnest(in_mail_id) AS list(mid)
     WHERE status&16 = 0
      AND m.mail_id = list.mid
-    RETURNING list.mid
+    RETURNING m.mail_id,m.status
  )
- -- tags for messages in trashcan are discounted.
+ -- tags of messages put in trashcan are subtracted from
+ -- cached counts when they were archived previously
  INSERT INTO tags_counters(tag_id,cnt,temp)
    SELECT tag, -1*count(*), true FROM mail_tags JOIN v ON (mail_id=mid)
+     WHERE v.status&32=32
      GROUP BY tag
  RETURNING tags_counters.tag_id, tags_counters.cnt;
 END;
