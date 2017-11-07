@@ -2,7 +2,7 @@
 # Incoming preprocess plugin to discard messages
 # already in the database based on their SHA1 digest
 
-# Copyright (C) 2014-2016 Daniel Verite
+# Copyright (C) 2014-2017 Daniel Verite
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
 # This program is free software; you can redistribute it and/or modify
@@ -35,6 +35,7 @@ package Manitou::Plugins::no_duplicate;
 
 use strict;
 
+use Manitou::Config qw(getconf_bool);
 use Digest::SHA;
 use DBD::Pg qw(:pg_types);
 
@@ -97,16 +98,36 @@ sub reassign_tags {
     }
     $dbh->begin_work if (@del && @ins);
     if (@del) {
-      my $s = $dbh->prepare("DELETE FROM mail_tags WHERE mail_id=? AND tag IN (" .
-			    join(',', @del) . ")");
-      $s->execute($mail_id);
-      $s->finish;
+      if (getconf_bool("materialize_tags_counts")) {
+	my $s = $dbh->prepare("SELECT remove_mail_tags(?, array[?]::int[])");
+	foreach (sort { $a <=> $b } @del) {
+	  $s->execute($_, $mail_id);
+	  print "Removing tag $_ from mail_id $mail_id\n";
+	}
+	$s->finish;
+      }
+      else {
+	my $s = $dbh->prepare("DELETE FROM mail_tags WHERE mail_id=? AND tag IN (" .
+			      join(',', @del) . ")");
+	$s->execute($mail_id);
+	$s->finish;
+      }
     }
     if (@ins) {
-      my $s = $dbh->prepare("INSERT INTO mail_tags(mail_id,tag) SELECT ?,i FROM".
-			    " unnest('{". join(',', @ins) . "}'::int[]) AS l(i)");
-      $s->execute($mail_id);
-      $s->finish;
+      if (getconf_bool("materialize_tags_counts")) {
+	my $s = $dbh->prepare("SELECT add_mail_tags(?, array[?]::int[])");
+	foreach (sort { $a <=> $b } @ins) {
+	  $s->execute($_, $mail_id);
+	  print "Adding tag $_ to mail_id $mail_id\n";
+	}
+	$s->finish;
+      }
+      else {
+	my $s = $dbh->prepare("INSERT INTO mail_tags(mail_id,tag) SELECT ?,i FROM".
+			      " unnest('{". join(',', @ins) . "}'::int[]) AS l(i)");
+	$s->execute($mail_id);
+	$s->finish;
+      }
     }
     $dbh->commit if (@del && @ins);
   }
