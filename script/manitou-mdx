@@ -1317,23 +1317,27 @@ sub import_message_2 {
 
     my $safe_header;
     foreach (decode_mimewords($top->head->as_string)) {
-      my @t=@{$_};
-      if (!defined($t[1])) {	# us-ascii substring
-	$t[0] =~ s/\r?\n\s/ /sog if defined ($t[0]);
+      my @t = @{$_};
+      if (!defined $t[1]) {	# us-ascii substring
+	$t[0] =~ s/\r?\n\s/ /sog if defined $t[0];
 	$safe_header .= $t[0];
       }
       else {			# other charset: convert it to perl internal format
 	my $tu;
 	eval {
-	  $tu=Encode::decode($t[1], $t[0]);
+	  $tu = Encode::decode($t[1], $t[0]);
 	};
 	if ($@) {
 	  # if the decode fails (typically if the charset is unknown)
 	  # we fall down to using the string as is
-	  $tu=$t[0];
+	  $tu = $t[0];
 	}
-	$tu =~ s/\r?\n\s/ /sog if (defined($tu));
-	$safe_header .= $tu;
+	if (defined $tu) {
+	  $tu =~ s/\r?\n\s/ /sog;
+	  $tu =~ s/\x00/\\0/og;	# null chars are not supported in postgres text types
+	  $safe_header .= $tu;
+	}
+
       }
     }
 
@@ -1522,9 +1526,12 @@ sub insert_addresses {
 
     for my $a (@addrs) {
       if ($a->address) {
+	# postgres text types don't support null characters
+	(my $clean_email = $a->address) =~ s/\x00/\\0/g;
+	(my $clean_name = $a->name) =~ s/\x00/\\0/g;
 	push @haddr, {
-	  "email" => lc($a->address),
-	  "name" => $a->name,
+	  "email" => lc($clean_email),
+	  "name" => $clean_name,
 	  "addr_id" => undef,
 	  "pos" => $pos<32767 ? $pos : 32767,
 	  "prio" => 0,
@@ -1652,7 +1659,7 @@ sub insert_mail {
   }
 
   # Subject
-  # clean it before: (see the comment before the call to insert_header)
+  # clean it before: (see the other cleanup for $safe_header)
   $subject =~ tr/\x00-\x08//d;
   $subject =~ tr/\x0b-\x1F//d;
   $subject =~ tr/\x0a/ /;
