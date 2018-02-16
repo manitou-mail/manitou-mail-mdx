@@ -101,4 +101,26 @@ sub header_decode {
   return $h;
 }
 
+sub header_decode_unfold {
+  my $h;
+  foreach (decode_mimewords($_[0])) {
+    my @t=@{$_};
+    # default to iso-8859-15 if no encoding is specified in the header
+    # or if it's invalid. Normally this should be us-ascii but we're
+    # more permissive to avoid rejecting malformed messages containing
+    # 8 bit characters in headers.
+    $t[1]='iso-8859-15' if (!defined ($t[1]) || !Encode::resolve_alias($t[1]));
+    $t[0] =~ s/\r?\n[\t ]/ /sog;	# unfold
+    eval {
+      $h .= Encode::decode($t[1], $t[0]);
+    };
+    if ($@) {
+      # if the decode fails (typically if the charset is unknown)
+      # we fall down to using the string as is
+      $h.=$t[0];
+    }
+  }
+  return $h;
+}
+
 1;

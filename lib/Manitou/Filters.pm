@@ -131,7 +131,7 @@ sub list_addresses {
   my ($o, $field)=@_;
   my @a;
   eval {
-    @a = Manitou::MailFormat::parse_addresses(Manitou::Encoding::header_decode($o->head->get($field)));
+    @a = Manitou::MailFormat::parse_addresses(Manitou::Encoding::header_decode_unfold($o->head->get($field)));
   };
   return join ',', map { $_->address() } @a;
 }
@@ -255,7 +255,7 @@ my %eval_funcs =
       my $o=$ctxt->{mime_obj};
       my $v = $o->head->get($_[1]);
       chomp $v;
-      return Manitou::Encoding::header_decode($v);
+      return Manitou::Encoding::header_decode_unfold($v);
     },
     "args" => 1,
     "return_type" => $TYPE_STRING
@@ -266,7 +266,7 @@ my %eval_funcs =
       my $ctxt=$_[0];
       my $o=$ctxt->{mime_obj};
       if (!exists $ctxt->{cache}->{headers}) {
-	$ctxt->{cache}->{headers}=Manitou::Encoding::header_decode($o->head->as_string);
+	$ctxt->{cache}->{headers}=Manitou::Encoding::header_decode_unfold($o->head->as_string);
       }
       return $ctxt->{cache}->{headers};
     },
@@ -322,7 +322,7 @@ my %eval_funcs =
       }
       my $r;
       for my $h ("To", "Cc", "Bcc") {
-	my $v = Manitou::Encoding::header_decode($o->head->get($h));
+	my $v = Manitou::Encoding::header_decode_unfold($o->head->get($h));
 	$r = defined $r ? "$r,$v" : $v;
       }
       return $ctxt->{cache}->{recipients}=$r;
@@ -349,7 +349,7 @@ my %eval_funcs =
       my $o=$ctxt->{mime_obj};
       my $v = $o->head->get("subject");
       chomp $v;
-      Manitou::Encoding::header_decode($v);
+      Manitou::Encoding::header_decode_unfold($v);
     },
     "args" => 0,
     "return_type" => $TYPE_STRING
