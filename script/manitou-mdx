@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # manitou-mdx v-1.7.0
-# Copyright (C) 2004-2017 Daniel Verite
+# Copyright (C) 2004-2018 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -74,7 +74,7 @@ use Data::Dumper;
 my $DEBUG=$ENV{'MANITOU_MDX_DEBUG'};
 
 my $dbh;
-my $global_end;
+my $global_end=0;
 my $mail_id;			# currently processed
 my $verbosity;
 
@@ -92,6 +92,10 @@ my %loaded_plugins;
 
 my %options;
 
+# Mailfiles sources
+my %mailfiles_dirs;
+my %maildirs;
+my %spool_mboxes;
 
 # header -> mail_addresses.addr_type
 my %AddrTypes=( "From" => 1,
@@ -224,9 +228,6 @@ sub import_mailfiles {
 	$do_process=0;	
 	error_log("Cannot rename $fname");
       }
-    }
-    if (getconf_bool("auto_db_reconnect") && !$dbh->ping()) {
-      db_reconnect();
     }
     if ($do_process) {
       my $t0 = [gettimeofday];
@@ -482,11 +483,7 @@ sub main_multi {
   init_maintenance_tasks();
   load_stopwords($dbh);
 
-  # Build the list of directories where mailfiles are to be looked for
-  # A directory points to a mailbox (possibly an anonymous mailbox)
-  my %mailfiles_dirs;
-  my %maildirs;
-  my %spool_mboxes;
+  # Find where mailfiles are to be looked for
   for my $m (mailboxes()) {
     my $dir=getconf("mailfiles_directory", $m);
     if (defined $dir) {
@@ -660,33 +657,69 @@ sub main_multi {
     $SIG{'TERM'} = 'sigterm';
     $SIG{'INT'} = 'sigterm';
     my $msg_fork = $option_fork ? "forked":"non-forked";
-    LogSuccess("starting in daemon $msg_fork mode");
-    $dbh->begin_work;
-    Manitou::Words::flush_jobs_queue($dbh);
-    $dbh->commit;
+    notice_log("starting in daemon $msg_fork mode");
 
-    my $last_checked_incoming=time-getconf("incoming_check_interval")-1;
+    do {
+      eval {
+	daemon_loop($dbh);
+      };
+      if ($@ && !$global_end) {
+	# A problem occurred. Quit unless it's a db disconnect
+	# that we can recover from.
+	$global_end = 1;
+	if ($DBI::state eq "08000" && getconf_bool("auto_db_reconnect")) {  # disconnected
+	  $dbh->disconnect();	       # make it explicit for DBI
+	  error_log("Disconnected from database, will try to reconnect");
+	  # try to reconnect
+	  $dbh = Manitou::Database::db_loop_reconnect();
+	  if ($dbh) {
+	    # this is the only case when daemon_loop can run again
+	    notice_log("Reconnected to database");
+	    $global_end = 0;
+	  }
+	}
+      }
+      else {
+	# Normal exit. Flush pending writes then disconnect.
+	if (Manitou::Words::queue_size() > 0) {
+	  do_flush_word_vectors;
+	  $dbh->disconnect;
+	}
+      }
+    } while (!$global_end)
+  }
+}
 
-    $global_end=0;
-    $mail_id=0;
+# daemon mode
+sub daemon_loop {
+  my $dbh=shift;
 
-    if (getconf_bool("update_runtime_info") && getconf('alive_interval')) {
-      update_runtime_timestamp("last_alive")
-    }
+  $dbh->begin_work;
+  Manitou::Words::flush_jobs_queue($dbh);
+  $dbh->commit;
 
-    my $in_interv=getconf("incoming_check_interval");
-    my $out_interv=getconf("outgoing_check_interval");
-    my $no_send=(getconf_bool("no_send"));
-    my $still_to_go;
+  my $last_checked_incoming=time-getconf("incoming_check_interval")-1;
 
-    my $last_checked_jobs=0;
-    # Start by sending any pending outgoing mail
-    my $last_checked_outgoing=time;
-    send_mails() unless $no_send;
+  $global_end=0;
+  $mail_id=0;
 
-    # Main loop
-    while (!$global_end) {
-      if ($still_to_go>0 || time >= $last_checked_incoming+$in_interv) {
+  if (getconf_bool("update_runtime_info") && getconf('alive_interval')) {
+    update_runtime_timestamp("last_alive")
+  }
+
+  my $in_interv=getconf("incoming_check_interval");
+  my $out_interv=getconf("outgoing_check_interval");
+  my $no_send=(getconf_bool("no_send"));
+  my $still_to_go;
+
+  my $last_checked_jobs=0;
+  # Start by sending any pending outgoing mail
+  my $last_checked_outgoing=time;
+  send_mails() unless $no_send;
+
+  # Main loop
+  while (!$global_end) {
+    if ($still_to_go>0 || time >= $last_checked_incoming+$in_interv) {
 	# import
 	$last_checked_incoming=time;
 	$still_to_go=0;
@@ -741,45 +774,42 @@ sub main_multi {
 	    }
 	  }
 	}
-      }
+    }
 
-      if (!$no_send) {
+    if (!$no_send) {
 	# send
 	if (time >= $last_checked_outgoing+$out_interv) {
 	  $last_checked_outgoing=time;
-	  if (getconf_bool("auto_db_reconnect") && !$dbh->ping()) {
-	    db_reconnect();
-	  }
 	  send_mails();
 	}
-      }
-      else {
+    }
+    else {
 	$last_checked_outgoing=time;
-      }
+    }
 
-      my $t = time;
+    my $t = time;
 
-      Manitou::Jobs::check_end_async_jobs($dbh);
-      if ($last_checked_jobs+5 < $t) {
+    Manitou::Jobs::check_end_async_jobs($dbh);
+    if ($last_checked_jobs+5 < $t) {
 	$last_checked_jobs = $t;
-        Manitou::Jobs::process_async_jobs_queue($dbh);
-        check_new_jobs();
-      }
+      Manitou::Jobs::process_async_jobs_queue($dbh);
+      check_new_jobs();
+    }
 
-      # compute the minimum lapse of time before we'll need to
-      # do something, and then sleep that amount of time
-      my ($mtask,$maint_when) = check_maintenance_schedule($t);
+    # compute the minimum lapse of time before we'll need to
+    # do something, and then sleep that amount of time
+    my ($mtask,$maint_when) = check_maintenance_schedule($t);
 
-      while ($maint_when && $maint_when<=$t) {
+    while ($maint_when && $maint_when<=$t) {
 	run_maintenance_task($mtask);
 	($mtask,$maint_when) = check_maintenance_schedule($t);
-      }
-      my $nx_act=min($last_checked_incoming+$in_interv,
+    }
+    my $nx_act=min($last_checked_incoming+$in_interv,
 		     $last_checked_outgoing+$out_interv);
-      $nx_act = min($nx_act, $maint_when) if ($maint_when);
+    $nx_act = min($nx_act, $maint_when) if ($maint_when);
 
-      my $widx_size=Manitou::Words::queue_size();
-      if ($widx_size >0) {
+    my $widx_size=Manitou::Words::queue_size();
+    if ($widx_size >0) {
 	my $when_widx = Manitou::Words::last_flush_time() + getconf("flush_word_index_interval");
 	if ($when_widx <= $t || $widx_size >= getconf("flush_word_index_max_queued")) {
 	  do_flush_word_vectors;
@@ -787,11 +817,11 @@ sub main_multi {
 	else {
 	  $nx_act=min($nx_act, $when_widx);
 	}
-      }
+    }
 
-      # sleep unless there's something better to do right now
-      $t=time;
-      if (!($nx_act<=$t || $still_to_go>0)) {
+    # sleep unless there's something better to do right now
+    $t=time;
+    if (!($nx_act<=$t || $still_to_go>0)) {
 	my $bits;
 	vec($bits, $dbh->{pg_socket}, 1)=1;
 	my $found = select($bits, undef, undef, $nx_act-$t);
@@ -801,14 +831,8 @@ sub main_multi {
 	    process_notification($notif_name, $payload);
 	  }
 	}
-      }
     }
   }
-
-  if (Manitou::Words::queue_size() > 0) {
-    do_flush_word_vectors;
-  }
-  $dbh->disconnect;
 }
 
 sub check_new_jobs {
@@ -1064,13 +1088,6 @@ sub init_temp_dir {
   }
 }
 
-sub LogError {
-  error_log(@_);
-}
-
-sub LogSuccess {
-  notice_log(@_);
-}
 
 # Remove the non-paired occurrences of symbols from a phrase
 # and returns that phrase
@@ -1147,7 +1164,7 @@ sub convnull {
 }
 
 sub sigterm {
-  LogError ("SIGTERM caught. Exiting...");
+  error_log("SIGTERM caught. Exiting...");
   $global_end=1;
 }
 

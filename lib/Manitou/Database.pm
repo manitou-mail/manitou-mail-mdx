@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2016 Daniel Verite
+# Copyright (C) 2004-2018 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -23,7 +23,7 @@ use vars qw(@ISA @EXPORT_OK);
 
 require Exporter;
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(db_connect bytea_output);
+@EXPORT_OK = qw(db_connect bytea_output db_loop_reconnect);
 
 use Manitou::Config qw(getconf);
 my $cache_bytea_output;
@@ -61,6 +61,19 @@ sub db_connect {
   ($cache_bytea_output) = $s->fetchrow_array;
   $cache_bytea_output="escape" if (!defined $cache_bytea_output);
 
+  return $dbh;
+}
+
+# Attempt to reconnect every 5s
+# Return undef to give up, but currently it tries forever.
+sub db_loop_reconnect {
+  my $dbh;
+  do {
+    sleep 5;
+    eval {
+      $dbh = db_connect;
+    };
+  } while ($@);
   return $dbh;
 }
 
