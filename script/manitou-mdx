@@ -65,8 +65,7 @@ use Manitou::Attachments qw(flatten_and_insert_attach
 			    detach_text_attachments
 			    attach_parts create_html_part has_attachments);
 use Manitou::Encoding qw(encode_dbtxt decode_dbtxt header_decode);
-use Manitou::Config qw(getconf getconf_bool add_mbox readconf
-		       set_common_conf mailboxes);
+use Manitou::Config qw(getconf getconf_bool add_mbox set_common_conf mailboxes);
 use Manitou::Database qw(db_connect);
 use Manitou::Log qw(notice_log error_log init_log debug_log warning_log);
 use Data::Dumper;
@@ -460,8 +459,12 @@ sub main_multi {
   }
   if (defined $conf_file) {
     my %err;
-    if (!readconf($conf_file, \%err)) {
+    if (!Manitou::Config::readconf($conf_file, \%err)) {
       print STDERR "Error in config file: ", $err{msg}, "\n";
+      exit 1;
+    }
+    if (!Manitou::Config::mbox_exists('common')) {
+      print STDERR "Error: no [common] section found in config file.\n";
       exit 1;
     }
   }
