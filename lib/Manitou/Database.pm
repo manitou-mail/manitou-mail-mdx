@@ -61,6 +61,8 @@ sub db_connect {
   ($cache_bytea_output) = $s->fetchrow_array;
   $cache_bytea_output="escape" if (!defined $cache_bytea_output);
 
+  create_db_temp_functions($dbh);
+
   return $dbh;
 }
 
@@ -75,6 +77,33 @@ sub db_loop_reconnect {
     };
   } while ($@);
   return $dbh;
+}
+
+sub create_db_temp_functions {
+  my $dbh = shift;
+  # Insert a new email address, handling a potential concurrent session that
+  # has inserted the same address and not yet committed.
+  # Called only with PG 9.4 and older, otherwise INSERT...ON CONFLICT is used.
+  my $r = $dbh->do(q{
+    CREATE FUNCTION pg_temp.insert_address(in_email text, in_name text) returns integer as $$
+    DECLARE
+     v_addr_id int;
+    BEGIN
+      BEGIN
+	INSERT INTO addresses(addr_id,email_addr,name,last_recv_from,nb_recv_from)
+	  VALUES(nextval('seq_addr_id'), in_email, in_name, now(), 1)
+	RETURNING addr_id
+	INTO v_addr_id;
+
+      EXCEPTION WHEN unique_violation THEN
+       SELECT addr_id FROM addresses WHERE email_addr=in_email
+	 INTO v_addr_id;
+      END;
+
+      RETURN v_addr_id;
+    END $$ language plpgsql;
+  });
+
 }
 
 1;

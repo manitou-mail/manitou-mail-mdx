@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2015 Daniel Verite
+# Copyright (C) 2004-2018 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -158,6 +158,9 @@ sub readconf {
   my $cur_mbox;
   my $multiline=0;
   my ($param,$value,$type);
+
+  %mbox_conf = ();
+
   open(F, "$filename") or die "$filename: $!";
   while (<F>) {
     chomp;

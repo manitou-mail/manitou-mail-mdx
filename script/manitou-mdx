@@ -74,6 +74,7 @@ my $DEBUG=$ENV{'MANITOU_MDX_DEBUG'};
 
 my $dbh;
 my $global_end=0;
+my $global_reload = 0;		# set on SIGHUP
 my $mail_id;			# currently processed
 my $verbosity;
 
@@ -214,7 +215,7 @@ sub import_mailfiles {
     # we don't want to import too much files in one go to avoid
     # having maintenance plugins and the sending of outgoing mail
     # being delayed
-    last if ($global_end || $import_count>=20);
+    last if ($global_end || $global_reload || $import_count>=20);
     my $fname = "$dir/$rel_fname";
     my $st=stat($fname);
     my $proc_filename = $fname;
@@ -359,37 +360,6 @@ sub min {
   return $m;
 }
 
-sub db_reconnect {
-  db_connect();
-  create_db_temp_functions();
-  notice_log("Successful database reconnect");
-}
-
-sub create_db_temp_functions {
-  # Insert a new email address, handling a potential concurrent session that
-  # has inserted the same address and not yet committed.
-  # Called only with PG 9.4 and older, otherwise INSERT...ON CONFLICT is used.
-  my $r = $dbh->do(q{
-    CREATE FUNCTION pg_temp.insert_address(in_email text, in_name text) returns integer as $$
-    DECLARE
-     v_addr_id int;
-    BEGIN
-      BEGIN
-	INSERT INTO addresses(addr_id,email_addr,name,last_recv_from,nb_recv_from)
-	  VALUES(nextval('seq_addr_id'), in_email, in_name, now(), 1)
-	RETURNING addr_id
-	INTO v_addr_id;
-
-      EXCEPTION WHEN unique_violation THEN
-       SELECT addr_id FROM addresses WHERE email_addr=in_email
-	 INTO v_addr_id;
-      END;
-
-      RETURN v_addr_id;
-    END $$ language plpgsql;
-  });
-
-}
 
 # Extract one message from a mailbox and copy it into a temporary file
 # The first line may be ^From_ but it may also be the next line
@@ -426,6 +396,59 @@ sub extract_mbox_tmpfile {
   return $name;
 }
 
+sub common_init {
+  my $conf_file = shift;
+  my $params = shift;
+
+  $params = {} if (!defined $params);
+
+  if (defined $conf_file) {
+    my %err;
+    if (!Manitou::Config::readconf($conf_file, \%err)) {
+      print STDERR "Error in config file: ", $err{msg}, "\n";
+      exit 1;
+    }
+    if (!Manitou::Config::mbox_exists('common')) {
+      print STDERR "Error: no [common] section found in config file.\n";
+      exit 1;
+    }
+  }
+
+  if (exists $params->{global_mbox} && $params->{global_mbox} ne "") {
+    add_mbox($params->{global_mbox});
+  }
+
+  # When $option_fork is set, this connection to the database is made
+  # only to detect early if it fails, so that we can exit with a useful
+  # error message instead of forking. But the child process will reconnect.
+  $dbh = db_connect();
+
+  init_identities();
+  init_plugins();
+  init_maintenance_tasks();
+  load_stopwords($dbh);
+
+  # Find where mailfiles are to be looked for
+  for my $m (mailboxes()) {
+    my $dir=getconf("mailfiles_directory", $m);
+    if (defined $dir) {
+      $mailfiles_dirs{$m}= {type=>"dot-received", location=>$dir};
+    }
+    $dir=getconf("spool_maildir", $m);
+    if (defined $dir) {
+      # spool_maildir accepts multiple directories separated by ':'
+      # warning: no quoting mechanism for ':'
+      foreach (split /:/, $dir) {
+	push @{$maildirs{$m}}, {type=>"maildir", location=>$_};
+      }
+    }
+    $dir=getconf("spool_mailbox", $m);
+    if (defined $dir) {
+      $spool_mboxes{$m} = {type=>"mailbox", location=>$dir, last_size=>0, last_mtime=>0};
+    }
+  }
+}
+
 sub main_multi {
   my $mailbox_file;
   my $conf_file;
@@ -457,54 +480,11 @@ sub main_multi {
   if (!defined $conf_file && -e "/etc/manitou-mdx.conf") {
     $conf_file="/etc/manitou-mdx.conf";	# default config file
   }
-  if (defined $conf_file) {
-    my %err;
-    if (!Manitou::Config::readconf($conf_file, \%err)) {
-      print STDERR "Error in config file: ", $err{msg}, "\n";
-      exit 1;
-    }
-    if (!Manitou::Config::mbox_exists('common')) {
-      print STDERR "Error: no [common] section found in config file.\n";
-      exit 1;
-    }
-  }
+
+  common_init($conf_file, {global_mbox => $global_mbox} );
+
   init_log($option_fork ? "syslog":"console");
   init_temp_dir();
-
-  if (defined $global_mbox && $global_mbox ne "") {
-    # let init_mailboxes create the mailbox if necessary
-    add_mbox($global_mbox);
-  }
-
-  # If $option_fork is set, we connect to the database only to test if the
-  # connection succeeds, so that we can exit with a useful error message
-  # instead of forking.
-  $dbh = db_connect();
-
-  init_identities();
-  init_plugins();
-  init_maintenance_tasks();
-  load_stopwords($dbh);
-
-  # Find where mailfiles are to be looked for
-  for my $m (mailboxes()) {
-    my $dir=getconf("mailfiles_directory", $m);
-    if (defined $dir) {
-      $mailfiles_dirs{$m}= {type=>"dot-received", location=>$dir};
-    }
-    $dir=getconf("spool_maildir", $m);
-    if (defined $dir) {
-      # spool_maildir accepts multiple directories separated by ':'
-      # warning: no quoting mechanism for ':'
-      foreach (split /:/, $dir) {
-	push @{$maildirs{$m}}, {type=>"maildir", location=>$_};
-      }
-    }
-    $dir=getconf("spool_mailbox", $m);
-    if (defined $dir) {
-      $spool_mboxes{$m} = {type=>"mailbox", location=>$dir, last_size=>0, last_mtime=>0};
-    }
-  }
 
   if ($option_fork) {
     $dbh->disconnect;
@@ -534,8 +514,6 @@ sub main_multi {
       init_temp_dir();
     }
   }
-
-  create_db_temp_functions();
 
   if (defined($mailbox_file)) {
     my $mail_cnt=0;
@@ -659,6 +637,7 @@ sub main_multi {
     # daemon mode
     $SIG{'TERM'} = 'sigterm';
     $SIG{'INT'} = 'sigterm';
+    $SIG{'HUP'} = 'sighup';
     my $msg_fork = $option_fork ? "forked":"non-forked";
     notice_log("starting in daemon $msg_fork mode");
 
@@ -666,7 +645,7 @@ sub main_multi {
       eval {
 	daemon_loop($dbh);
       };
-      if ($@ && !$global_end) {
+      if ($@ && !$global_end && !$global_reload) {
 	# A problem occurred. Quit unless it's a db disconnect
 	# that we can recover from.
 	$global_end = 1;
@@ -676,17 +655,22 @@ sub main_multi {
 	  # try to reconnect
 	  $dbh = Manitou::Database::db_loop_reconnect();
 	  if ($dbh) {
-	    # this is the only case when daemon_loop can run again
 	    notice_log("Reconnected to database");
 	    $global_end = 0;
 	  }
 	}
       }
       else {
-	# Normal exit. Flush pending writes then disconnect.
+	# Normal exit or sighup received.
+	# Flush pending writes then disconnect.
 	if (Manitou::Words::queue_size() > 0) {
 	  do_flush_word_vectors;
 	  $dbh->disconnect;
+	}
+	if ($global_reload) {
+	  notice_log("Reloading configuration");
+	  common_init($conf_file, {global_mbox => $global_mbox});
+	  $global_reload = 0;
 	}
       }
     } while (!$global_end)
@@ -721,7 +705,7 @@ sub daemon_loop {
   send_mails() unless $no_send;
 
   # Main loop
-  while (!$global_end) {
+  while (!$global_end && !$global_reload) {
     if ($still_to_go>0 || time >= $last_checked_incoming+$in_interv) {
 	# import
 	$last_checked_incoming=time;
@@ -804,8 +788,8 @@ sub daemon_loop {
     my ($mtask,$maint_when) = check_maintenance_schedule($t);
 
     while ($maint_when && $maint_when<=$t) {
-	run_maintenance_task($mtask);
-	($mtask,$maint_when) = check_maintenance_schedule($t);
+      run_maintenance_task($mtask);
+      ($mtask,$maint_when) = check_maintenance_schedule($t);
     }
     my $nx_act=min($last_checked_incoming+$in_interv,
 		     $last_checked_outgoing+$out_interv);
@@ -813,27 +797,27 @@ sub daemon_loop {
 
     my $widx_size=Manitou::Words::queue_size();
     if ($widx_size >0) {
-	my $when_widx = Manitou::Words::last_flush_time() + getconf("flush_word_index_interval");
-	if ($when_widx <= $t || $widx_size >= getconf("flush_word_index_max_queued")) {
-	  do_flush_word_vectors;
-	}
-	else {
-	  $nx_act=min($nx_act, $when_widx);
-	}
+      my $when_widx = Manitou::Words::last_flush_time() + getconf("flush_word_index_interval");
+      if ($when_widx <= $t || $widx_size >= getconf("flush_word_index_max_queued")) {
+	do_flush_word_vectors;
+      }
+      else {
+	$nx_act=min($nx_act, $when_widx);
+      }
     }
 
     # sleep unless there's something better to do right now
     $t=time;
     if (!($nx_act<=$t || $still_to_go>0)) {
-	my $bits;
-	vec($bits, $dbh->{pg_socket}, 1)=1;
-	my $found = select($bits, undef, undef, $nx_act-$t);
-	if ($found) {
-	  while (my $notif = $dbh->pg_notifies) {
-	    my ($notif_name, $pid, $payload) = @$notif;
-	    process_notification($notif_name, $payload);
-	  }
+      my $bits;
+      vec($bits, $dbh->{pg_socket}, 1)=1;
+      my $found = select($bits, undef, undef, $nx_act-$t);
+      if ($found) {
+	while (my $notif = $dbh->pg_notifies) {
+	  my ($notif_name, $pid, $payload) = @$notif;
+	  process_notification($notif_name, $payload);
 	}
+      }
     }
   }
 }
@@ -1169,6 +1153,11 @@ sub convnull {
 sub sigterm {
   error_log("SIGTERM caught. Exiting...");
   $global_end=1;
+}
+
+sub sighup {
+  error_log("SIGHUP caught. Preparing to reload configuration...");
+  $global_reload = 1;
 }
 
 # Import the message and deal with database errors
@@ -2226,6 +2215,12 @@ sub init_plugins {
   my $d = getconf("plugins_directory");
   unshift(@INC, $d) if defined $d;
 
+  %preprocess_plugins = ();
+  %mimeprocess_plugins = ();
+  %postprocess_plugins = ();
+  %outgoing_plugins = ();
+  @maintenance_plugins = ();
+
   for my $mbox (mailboxes()) {
     for my $pl_type ("incoming_preprocess_plugins",
 		     "incoming_mimeprocess_plugins",
@@ -2332,6 +2327,9 @@ sub init_plugins {
 sub init_maintenance_tasks {
   # maintenance_tasks unifies user-defined maintenance plugins and
   # internal maintenance tasks
+
+  @maintenance_tasks = ();
+
   foreach (@maintenance_plugins) {
     my $task = {
       type => "plugin",

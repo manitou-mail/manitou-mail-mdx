@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2016 Daniel Verite
+# Copyright (C) 2004-2018 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -141,6 +141,7 @@ sub get_accents_conf {
 
 sub load_stopwords {
   my $dbh=shift;
+  %no_index_words = ();
   my $sth=$dbh->prepare("SELECT wordtext FROM non_indexable_words");
   $sth->execute;
   while (my @row=$sth->fetchrow_array) {
