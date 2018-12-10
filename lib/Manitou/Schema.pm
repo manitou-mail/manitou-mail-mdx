@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2017 Daniel Verite
+# Copyright (C) 2004-2018 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -30,12 +30,12 @@ require Exporter;
 		partition_words);
 
 sub current_version {
-  return "1.7.0";
+  return "1.7.1";
 }
 
 sub supported_versions {
   return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0",
-	  "1.3.1", "1.4.0", "1.5.0", "1.6.0", "1.7.0");
+	  "1.3.1", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.7.1");
 }
 
 my $create_script=<<EOF;
@@ -617,7 +617,7 @@ DECLARE
  tbl_ro text[]:='{
       "addresses", "attachment_contents", "attachments",
       "body", "config", "header", "identities", "identities_permissions",
-      "mail", "mail_addresses", "mail_tags",
+      "mail", "mail_addresses", "mail_tags", "programs",
       "notes", "runtime_info", "tags", "users", "user_queries" }';
 
  -- the tables that need to be UPDATE'able for a read-write user
@@ -1214,6 +1214,9 @@ sub upgrade_schema_statements {
             WHERE mail.status&(16+32)=32 GROUP BY tag) AS t
        ON (tag=tag_id)};
     push @stmt, $triggers{"update_tags"};
+  }
+  elsif ($from eq "1.7.0" && $to eq "1.7.1") {
+    push @stmt, $functions{"object_permissions"};
   }
 
   return @stmt;
