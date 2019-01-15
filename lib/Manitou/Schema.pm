@@ -736,17 +736,18 @@ $$
 DECLARE
   ostatus int;
 BEGIN
+  SELECT status INTO ostatus FROM mail WHERE mail_id = in_mail_id;
   IF new_status=-1 THEN  -- mail is to be deleted
     RETURN QUERY
       INSERT INTO tags_counters(tag_id, cnt, temp)
-	SELECT tag,-1,true FROM mail_tags WHERE mail_id = in_mail_id
+	SELECT tag,-1,true FROM mail_tags
+          WHERE mail_id = in_mail_id AND ostatus&(32+16)=32 -- archived and !trashed
 	RETURNING tag_id,-1;
     RETURN;
   END IF;
 
-  -- mail is not to be deleted
-  SELECT status INTO ostatus FROM mail WHERE mail_id = in_mail_id;
-  IF FOUND THEN
+  -- mail is going to trashcan
+  --
     -- if (!archived)=>archived
     IF (ostatus&32=0 AND new_status&32=32) THEN
       IF (new_status&16=0) THEN
@@ -776,7 +777,6 @@ BEGIN
 	    SELECT tag,1,true FROM mail_tags WHERE mail_id = in_mail_id
 	    RETURNING tag_id, 1;
     END IF;
-  END IF;
 END;
 $$ language plpgsql
 EOFUNCTION
