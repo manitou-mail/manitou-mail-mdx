@@ -1266,7 +1266,7 @@ sub import_message_2 {
     $body_text = Encode::decode($charset, $body_text, Encode::FB_PERLQQ);
   }
 
-  my $thread_id = get_thread_id ($top);
+  my $thread_id = get_thread_id($top);
 
   $mail_ctxt->{mail_id} = $mail_id;
   $mail_ctxt->{thread_id} = $thread_id;
@@ -1277,11 +1277,26 @@ sub import_message_2 {
 
   if ($action ne "discard") {
 
+    if (defined $thread_id) {
+      my $stht = $dbh->prepare("SELECT action_type FROM thread_action WHERE thread_id=?");
+      $stht->execute($thread_id);
+      while (my @actions_thread = $stht->fetchrow_array) {
+	if (@actions_thread) {
+	  if ($actions_thread[0] == 1) { # auto-archive thread
+	    $mail_ctxt->{status} |= 32;
+	  }
+	  elsif ($actions_thread[0] == 2) { # auto-trash-archive thread
+	    $mail_ctxt->{status} |= 16+32;
+	  }
+	}
+      }
+      $stht->finish;
+    }
+
     my $status=$options{'status'}+0;
     if ($mail_ctxt->{status}) {
       $status |= $mail_ctxt->{status};
     }
-    #if ($action eq "trash") { $status |= 16+32; }
 
     insert_mail($mbox_name,
 		$mail_id,
@@ -1411,6 +1426,8 @@ sub import_message_2 {
     # discarded
     $mail_id=-1;
   }
+
+
   $dbh->commit;
   $top->purge;
   close $gzfh if (defined $gzfh);
@@ -1420,37 +1437,46 @@ sub import_message_2 {
 # Input: (<msgid1>,<msgid2>,<msgid3>...)
 # Output: thread_id or undef
 sub get_references {
-  my ($thread_msg_ids)=@_;
-  my $thread;
-  # first message found with a message-id that matches one of our references
+  my ($thread_msg_ids) = @_;
+  my $thread;			# mail.thread_id
+  my $action_type;		# thread_action.action_type
+  # first message found with a message-id that matches one of the references
   my $ref_mail_id;
-  my $sth=$dbh->prepare("SELECT mail_id,thread_id FROM mail WHERE message_id=?");
+  my $sth = $dbh->prepare("SELECT mail_id,thread_id FROM mail WHERE message_id=?");
 
-  # Lookup the thread_id
+  # Look up the thread_id
   for my $s (@{$thread_msg_ids}) {
     if ($s =~ /\<(.*)\>/) {
       $sth->execute($1);
-      my @res;
-      if (@res=$sth->fetchrow_array) {
-	$ref_mail_id=$res[0];
-	if (defined($res[1])) {
-	  $thread=$res[1];
+      if (my @res = $sth->fetchrow_array) {
+	$ref_mail_id = $res[0];
+	if (defined $res[1]) {
+	  $thread = $res[1];
 	}
 	last; # stop at the first thread_id found
       }
     }
-#    else {
-#      print STDERR "$s: cannot be parsed as a Message-Id\n";
-#    }
+    # else cannot parse the reference as a Message-Id: ignore it
   }
+
   if ($ref_mail_id) {
-    # If at least one of the database messages is referred to by
-    # the incoming mail, then give them the same thread_id
-    if (!$thread) {
-      $thread=get_sequence_nextval("seq_thread_id");
+
+    if (!defined $thread) {
+
+      $thread = get_sequence_nextval("seq_thread_id");
+
+      # If the existing message that the current message joins
+      # in a thread has a corresponding thread_action entry,
+      # then replace its mail_id reference by the newly obtained
+      # thread reference.
+      $dbh->do(qq{UPDATE thread_action SET thread_id=?, mail_id=NULL
+		   WHERE mail_id=?},
+	       undef, $thread, $ref_mail_id);
     }
-    my $sthu=$dbh->prepare("UPDATE mail set thread_id=? WHERE mail_id=?");
-    $sthu->execute($thread,$ref_mail_id);
+    # Assign the ancestor message to the thread found or created,
+    # unless it it assigned already.
+    $dbh->do("UPDATE mail set thread_id=? WHERE mail_id=? AND thread_id IS NULL",
+	     undef, $thread, $ref_mail_id);
   }
 
   $sth->finish;
@@ -1584,20 +1610,19 @@ sub insert_addresses {
 }
 
 # Compare 'References' and 'In-Reply-To' fields with the
-# contents of mail.message_id in the db, and returns the db thread id
-# if it exists, or undef.
+# contents of mail.message_id in the db, and returns the
+# thread id which can be undef.
 sub get_thread_id {
   my ($mailobj) = @_;
   my @thread_msgs;
   if ($mailobj->head->get('In-Reply-To') =~ /.*\<(.*)\>/) {
     push @thread_msgs, "<$1>";
   }
-  my $other_mails=$mailobj->head->get('References');
+  my $other_mails = $mailobj->head->get('References');
   chomp $other_mails;
   push @thread_msgs, split(/\s+/, $other_mails);
 
-  my $thread_id = get_references(\@thread_msgs);
-  return $thread_id;
+  return get_references(\@thread_msgs);
 }
 
 sub insert_mail {

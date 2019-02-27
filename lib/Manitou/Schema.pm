@@ -363,6 +363,23 @@ CREATE TABLE tags_counters (
   temp boolean not null
 )
 EOT
+,"thread_action" => <<'EOT'
+CREATE TABLE thread_action (
+  thread_id integer,
+  mail_id integer,
+  action_type integer CHECK (action_type IN (1,2,3)),
+  date_insert timestamptz default now()
+  -- one and only one of (mail_id,thread_id) must be null
+  CHECK (mail_id IS NULL <> thread_id IS NULL)
+)
+EOT
+);
+
+my %indexes = (
+ "thread_action_idx1" =>
+    "CREATE INDEX thread_action_idx1 ON thread_action(mail_id) WHERE mail_id is not null",
+ "thread_action_idx2" =>
+    "CREATE INDEX thread_action_idx2 ON thread_action(thread_id) WHERE thread_id is not null"
 );
 
 my @ordered_tables = qw(
@@ -371,6 +388,7 @@ my @ordered_tables = qw(
   import_mbox import_message
   identities_permissions
   tags_counters
+  thread_action
 );
 
 
@@ -1017,6 +1035,9 @@ sub create_table_statements {
   foreach (@post_create_table_statements) {
     push @stmt, $_;
   }
+  foreach my $i (keys %indexes) {
+    push @stmt, $indexes{$i};
+  }
   return @stmt;
 
 }
@@ -1217,6 +1238,9 @@ sub upgrade_schema_statements {
   }
   elsif ($from eq "1.7.0" && $to eq "1.7.1") {
     push @stmt, $functions{"object_permissions"};
+    push @stmt, $tables{"thread_action"};
+    push @stmt, $indexes{"thread_action_idx1"};
+    push @stmt, $indexes{"thread_action_idx2"};
   }
 
   return @stmt;

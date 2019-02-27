@@ -35,7 +35,7 @@ use vars qw(@ISA @EXPORT_OK);
 # to the database
 my $pass_utf8_bytes;
 
-# Convert from perl internal format to a chain of bytes suitable for
+# Convert from perl internal format to a string of bytes suitable for
 # the current db encoding
 sub encode_dbtxt {
   return $_[0] if (!$pass_utf8_bytes);
