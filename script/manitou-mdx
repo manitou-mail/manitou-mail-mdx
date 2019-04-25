@@ -54,6 +54,7 @@ use File::Basename qw(basename dirname);
 use Fcntl qw(:seek);
 use Time::HiRes qw(gettimeofday tv_interval);
 use IO::Uncompress::Gunzip qw(gunzip $GunzipError) ;
+use String::ShellQuote qw(shell_quote);
 
 use Manitou::Filters;
 use Manitou::Jobs;
@@ -1947,7 +1948,6 @@ sub redirect {
     $top->head->replace("Subject", $subject . " (by way of <".$args->{From}.">)");
   }
 
-  $cmd =~ s/\$FROM\$/$args->{From}/g;
   my $mfh;
   if (!open($mfh, "|$cmd")) {
     print STDERR "Error while passing redirected mail to the local delivery agent (\`$cmd\`): $!\n";
@@ -2158,6 +2158,7 @@ sub send_one_mail {
 # Get the command to delivery mail locally
 sub get_delivery_agent {
   my $from=shift;
+  my @shell_quoted_from = shell_quote($from);
   my $cmd = getconf("local_delivery_agent", $from);
   if (!defined $cmd) {
     my $name = "sendmail";
@@ -2175,10 +2176,10 @@ sub get_delivery_agent {
 	return undef;
       }
     }
-    $cmd = "$path -f $from -t";
+    $cmd = "$path -f $shell_quoted_from[0] -t";
   }
   else {
-    $cmd =~ s/\$FROM\$/$from/g;
+    $cmd =~ s/\$FROM\$/$shell_quoted_from[0]/g;
   }
   return $cmd;
 }
