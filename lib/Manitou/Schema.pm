@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2018 Daniel Verite
+# Copyright (C) 2004-2019 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -370,7 +370,7 @@ CREATE TABLE thread_action (
   action_type integer CHECK (action_type IN (1,2,3)),
   date_insert timestamptz default now()
   -- one and only one of (mail_id,thread_id) must be null
-  CHECK (mail_id IS NULL <> thread_id IS NULL)
+  CHECK ((mail_id IS NULL) <> (thread_id IS NULL))
 )
 EOT
 );
