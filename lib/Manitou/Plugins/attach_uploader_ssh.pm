@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2011 Daniel Verite
+# Copyright (C) 2004-2019 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -22,7 +22,7 @@
 #
 # It should be declared in the manitou-mdx configuration file like this:
 #
-# outgoing_plugins = attach_uploader_ssh({host=>"ssh-server", login=>"your_login", password=>"your_password", maxsize=>1000000, path="/path/to/dir", base_url=>"http://www.domain.tld[/dir]"})
+# outgoing_plugins = attach_uploader_ssh({host=>"ssh-server", login=>"your_login", password=>"your_password", maxsize=>1000000, path="/path/to/dir", base_url=>"http://www.example.org[/dir]"})
 #
 # 'maxsize' is the size in bytes over which an attachment gets uploaded,
 #  and defaults to 1Mbytes (1048576)
@@ -32,7 +32,7 @@
 package Manitou::Plugins::attach_uploader_ssh;
 
 use strict;
-use POSIX qw(tmpnam);
+use File::Temp;
 use Data::Dumper;
 
 use Net::SFTP::Foreign;
@@ -108,16 +108,15 @@ sub upload {
   # TODO: stream into the ftp object
   # my $io=$obj->bodyhandle->open("r");
   # but doesn't work at the moment
-   my $tmpname=tmpnam();
-   open(F, ">$tmpname") or die "cannot open $tmpname\n";
-   $obj->bodyhandle->print(\*F);
-   close(F);
+  my $tmpfh = File::Temp->new(UNLINK=>0) or die "Cannot create a temporary file\n";
+  $obj->bodyhandle->print($tmpfh);
+  close($tmpfh);
 
-  if (!$ftp->put($tmpname, $fname)) {
-    die "Cannot put file $tmpname to $fname". $ftp->error;
+  if (!$ftp->put($tmpfh->filename, $fname)) {
+    warn "Cannot put file $tmpfh->filename to $fname". $ftp->error;
     $fname=undef;
   }
-  unlink($tmpname);
+  unlink($tmpfh->filename);
 
   return defined $fname ? $a->{base_url} . "/$dest_dir/$fname" : undef;
 }

@@ -1,5 +1,5 @@
 # pdf attachments indexing plugin for manitou-mail
-# Copyright (C) 2005-2008 Daniel Verite
+# Copyright (C) 2005-2019 Daniel Verite
 # Copyright (C) 2008 Luis Amigo
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
@@ -20,7 +20,7 @@
 
 package Manitou::Plugins::pdfindexer;
 
-use POSIX qw(tmpnam);
+use File::Temp;
 
 # The output of pdftotext is to be interpreted as utf8, and then
 # possibly converted back into the database encoding
@@ -60,11 +60,11 @@ sub process {
     foreach my $subobj ($obj->parts) {
       my $type=$subobj->effective_type;
       if ($type eq "application/pdf") {
-	my $fname=tmpnam();
-	open(F, ">$fname") or die "can not open $fname";
-	binmode F;
-	$subobj->bodyhandle->print(\*F);
-	close(F);
+	my $tmpfh = File::Temp->new(UNLINK=>0) or die "Cannot create a temporary file\n";
+	my $fname = $tmpfh->filename;
+	binmode $tmpfh;
+	$subobj->bodyhandle->print($tmpfh);
+	close($tmpfh);
 	# run wvWare
 	if (!open(F2, $self->{'command'} . " $fname - |")) {
 	  unlink($fname);

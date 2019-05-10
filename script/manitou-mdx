@@ -43,7 +43,7 @@ use MIME::Parser;
 use MIME::Body;
 use Mail::Address;
 use Mail::Internet;
-use POSIX qw(strftime mktime tmpnam getuid);
+use POSIX qw(strftime mktime getuid);
 use File::stat;
 use IO::Handle;
 use IPC::Open3;
@@ -384,11 +384,12 @@ sub extract_mbox_tmpfile {
       }
     }
     if (!defined $ofh) {
-      ($ofh,$name)= tempfile();
+      $ofh = File::Temp->new(UNLINK=>0);
       if (!$ofh) {
 	error_log("Could not create temporary file when parsing mailbox:$!");
 	return undef;
       }
+      $name = $ofh->filename;
     }
     print $ofh $_;
     $llwe=($_ eq "\n")?1:0;

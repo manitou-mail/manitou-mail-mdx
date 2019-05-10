@@ -1,6 +1,4 @@
-# attach_uploader plugin
-# Copyright (C) 2005-2011 Daniel Verite
-# Version $Id: attach_uploader.pm 1024 2011-11-25 15:31:53Z dgv $
+# Copyright (C) 2005-2019 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -19,12 +17,13 @@
 # Boston, MA 02111-1307, USA.
 
 ########################################################################
+# attach_uploader plugin
 # This plugin pulls large attachments off outgoing mail,
 # uploads them to an FTP server and replace them with an URL.
 #
 # It should be declared in the manitou-mdx configuration file like this:
 #
-# outgoing_plugins = attach_uploader({host=>"ftp-server-name", login=>"your_login", password=>"your_password", maxsize=>1000000, path="ftp_path_to_cd_into", base_url=>"http://www.domain.tld[/whatever]"})
+# outgoing_plugins = attach_uploader({host=>"ftp-server-name", login=>"your_login", password=>"your_password", maxsize=>1000000, path="ftp_path_to_cd_into", base_url=>"http://www.example.org[/whatever]"})
 #
 # 'maxsize' is the size in bytes over which an attachment gets uploaded,
 #  and defaults to 1Mbytes (1000000)
@@ -34,7 +33,7 @@
 package Manitou::Plugins::attach_uploader;
 
 use strict;
-use POSIX qw(tmpnam);
+use File::Temp;
 
 require Net::FTP;
 
@@ -101,18 +100,17 @@ sub upload {
   # TODO: stream into the ftp object
   # my $io=$obj->bodyhandle->open("r");
   # but doesn't work at the moment
-   my $tmpname=tmpnam();
-   open(F, ">$tmpname") or die "cannot open $tmpname\n";
-   $obj->bodyhandle->print(\*F);
-   close(F);
+  my $tmpfh = File::Temp->new(UNLINK=>0) or die "Cannot create a temporary file\n";
+  $obj->bodyhandle->print($tmpfh);
+  close($tmpfh);
 
   $ftp->binary;
-  if (!$ftp->put($tmpname, $fname)) {
+  if (!$ftp->put($tmpfh->filename, $fname)) {
     print STDERR "Cannot put file ", $ftp->message, "\n";
     $fname=undef;
   }
   $ftp->quit;
-  unlink($tmpname);
+  unlink($tmpfh->filename);
 
   return defined($fname) ?$a->{base_url} . "/$fname" : undef;
 }
