@@ -20,7 +20,6 @@ lib/Manitou/xSV.pm
 lib/Manitou/Plugins/attach_uploader.pm
 lib/Manitou/Plugins/attach_uploader_ssh.pm
 lib/Manitou/Plugins/bayes_classify.pm
-lib/Manitou/Plugins/html_indexer.pm
 lib/Manitou/Plugins/init_status.pm
 lib/Manitou/Plugins/no_duplicate.pm
 lib/Manitou/Plugins/spam_learner.pm
