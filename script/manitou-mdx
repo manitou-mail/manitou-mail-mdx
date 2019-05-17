@@ -2159,7 +2159,7 @@ sub send_one_mail {
 # Get the command to delivery mail locally
 sub get_delivery_agent {
   my $from=shift;
-  my @shell_quoted_from = shell_quote($from);
+  my $shell_quoted_from = shell_quote($from);
   my $cmd = getconf("local_delivery_agent", $from);
   if (!defined $cmd) {
     my $name = "sendmail";
@@ -2177,10 +2177,10 @@ sub get_delivery_agent {
 	return undef;
       }
     }
-    $cmd = "$path -f $shell_quoted_from[0] -t";
+    $cmd = "$path -f $shell_quoted_from -t";
   }
   else {
-    $cmd =~ s/\$FROM\$/$shell_quoted_from[0]/g;
+    $cmd =~ s/\$FROM\$/$shell_quoted_from/g;
   }
   return $cmd;
 }
