@@ -22,6 +22,7 @@ lib/Manitou/Plugins/attach_uploader_ssh.pm
 lib/Manitou/Plugins/bayes_classify.pm
 lib/Manitou/Plugins/init_status.pm
 lib/Manitou/Plugins/no_duplicate.pm
+lib/Manitou/Plugins/overwrite_mime_type.pm
 lib/Manitou/Plugins/spam_learner.pm
 lib/Manitou/Plugins/spamc.pm
 lib/Manitou/Plugins/tnef_decoder.pm
