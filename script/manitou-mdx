@@ -1245,6 +1245,8 @@ sub import_message_2 {
     $pl_ctxt{'mail_id'}=$mail_id;
     $pl_ctxt{'dbh'}=$dbh;
     $pl_ctxt{'status'}=$mail_ctxt->{'status'};
+    $pl_ctxt{notice_log} = \&notice_log;
+    $pl_ctxt{error_log} = \&error_log;
     if ($mail_ctxt->{'tags'}) {
       @{$pl_ctxt{'tags'}} = @{$mail_ctxt->{'tags'}};
     }
