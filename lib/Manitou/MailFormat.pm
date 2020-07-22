@@ -27,7 +27,7 @@ use MIME::Words qw(:all);
 
 require Exporter;
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(encode_header add_date_header encode_text_body parse_sender_date);
+@EXPORT_OK = qw(encode_header add_date_header encode_text_body parse_sender_date encode_rfc2047_header);
 
 
 sub encode_qp_char {
@@ -82,6 +82,12 @@ sub assemble_rfc2047 {
   my ($l, $reserved, $charset, $encoding)=@_;
   my $maxl = 78;
   my $mw_len = length("=?$charset?$encoding?")+2;
+
+  # token types
+  # M: MIME-encoded word contents (qp-encoded but undecorated)
+  # S: spaces
+  # V: verbatim text
+  # N: folding space
 
   # combine ME-words separated by spaces
   for (my $i=0; $i < @{$l}; $i++) { # @{$l} is modified inside the loop
@@ -147,8 +153,14 @@ sub assemble_rfc2047 {
   return @{$l};
 }
 
+# Input:
+# - header_name in lower case
+# - header value from the database, on a single line, free of any
+#   rfc-2047 MIME encoding
+# - charset to use for rfc-2047 encoding
+# - number of characters already counted in the line's length
 sub encode_rfc2047_header {
-    my ($value, $in_charset, $reserved) = @_;
+    my ($header_name, $value, $in_charset, $reserved) = @_;
     # $reserved is the number of bytes already used at the beginning of the
     # header. Used to check against the rfc822 78/998 line length limits.
 
@@ -158,42 +170,85 @@ sub encode_rfc2047_header {
 
     # shortcut if short line containing only printable US-ASCII
     if ($value !~ /[^\x20-\x7E]/ && length($value) < $max_bytes) {
-	return $value;
+      return $value;
     }
 
-    # fold the big line into several lines separated by newline+space
-    my @tokens = split (/( +)/, $value);
+    my @out;  # components to pass to assemble_rfc2047
 
-    # if the line starts with WSPs, the first array elt will be undef: remove it
-    shift @tokens if (@tokens>0 && $tokens[0] eq "");
+    # Header lines for mail addresses are formatted specially
+    if ($header_name eq "from" || $header_name eq "to" ||
+	$header_name eq "replyto" || $header_name eq "cc" ||
+	$header_name eq "bcc")
+    {
+      my @addrs = Mail::Address->parse($value);
 
-    my @out;
-    for (my $i=0; $i < @tokens; $i++) {
-      my $w = $tokens[$i];
-      my $wl = length $w;
-      if ($w =~ / /o) {
-	# space(s)
-	push @out, { t=>'S', v=>$w };
-      }
-      else {
-	# word (non WSP)
-	if ($w =~ /[^\x{20}-\x{7e}]/o) {
-	  # word has characters outside of US-ASCII
-	  my $w0 = $w;
-	  $w = encode_qp_word($w, $charset);
-	  push @out, { t=>'M', v=>$w, d=>$w0 };
+
+      foreach my $addr (@addrs) {
+	# Each address will have the format:
+	# Firstname Lastname <email@example.org>
+
+	# add separators between addresses
+	if (@out != 0) {
+	  push @out, { t=>'V', v=>',' }, { t=>'N', v=>' ' };
+	}
+	my $name = $addr->name;
+	if (defined $name) {
+	  # if the name consists only of ASCII characters, push it verbatim
+	  if ($name !~ /[^\x20-\x7E]/) {
+	    push @out, { t=>'V', v=>$name };
+	  }
+	  else {
+	    # otherwise push it as a me-word
+	    push @out, { t=>'M', v=> encode_qp_word($name, $charset) };
+	  }
+	  # assemble the words
+	  assemble_rfc2047(\@out,
+			   $reserved+2+length($addr->address), # +2 for angle brackets
+			   $charset,
+			   $encoding);
+	  # add the address, assuming it has only ASCII characters
+	  push @out, { t=>'S', v=>" " }, { t=>'V', v=>"<".$addr->address.">" };
 	}
 	else {
-	  # word that doesn't need MIME encoding
-	  push @out, { t=>'V', v=>$w };
+	  # if there is only an address, push it verbatim
+	  push @out, { t=>'V', v=>$addr->address };
 	}
       }
     }
+    else {
+      # For freely formatted headers, fold the big line into several
+      # lines separated by newline+space
+      my @tokens = split (/( +)/, $value);
 
-    # Reassemble the words
-    assemble_rfc2047(\@out, $reserved, $charset, $encoding);
+      # if the line starts with WSPs, the first array elt will be undef: remove it
+      shift @tokens if (@tokens>0 && $tokens[0] eq "");
 
-    my $llen = 0;
+      for (my $i=0; $i < @tokens; $i++) {
+	my $w = $tokens[$i];
+	my $wl = length $w;
+	if ($w =~ / /o) {
+	  # space(s)
+	  push @out, { t=>'S', v=>$w };
+	}
+	else {
+	  # word (non WSP)
+	  if ($w =~ /[^\x{20}-\x{7e}]/o) {
+	    # word has characters outside of US-ASCII
+	    my $w0 = $w;
+	    $w = encode_qp_word($w, $charset);
+	    push @out, { t=>'M', v=>$w, d=>$w0 };
+	  }
+	  else {
+	    # word that doesn't need MIME encoding
+	    push @out, { t=>'V', v=>$w };
+	  }
+	}
+      }
+
+      # Reassemble the words
+      assemble_rfc2047(\@out, $reserved, $charset, $encoding);
+    }
+
     my $mline;			# multi-line output
     foreach (@out) {
       my $v = $_->{v};
@@ -206,12 +261,10 @@ sub encode_rfc2047_header {
       }
       elsif ($_->{t} eq "N") {
 	$mline .= "\n" . $v;
-	$llen = 0;
       }
       elsif ($_->{t} eq "S") {
 	$mline .= $v;
       }
-      $llen += length $v;
     }
 
     return $mline;
@@ -223,10 +276,12 @@ sub encode_header {
   my @charsets=@_;
 
   my $hln=0;
+
   # do not automatically reformat headers (Mail::Head's automatic
   # reformatting converts our CRLF+LWSP between mime-encoded word to
   # spaces)
   $top->head->modify(0);
+
   for my $hl (split (/\n/, $header_lines)) {
     $hln++;
     chomp $hl;
@@ -250,9 +305,8 @@ sub encode_header {
 	  die "Unable to encode outgoing header entry at line $hln with any of the specified charsets (See 'preferred_charset' configuration parameter)";
 	}
       }
-      my $v = encode_rfc2047_header($h_line, $eh_charset, length($h_entry)+2);
+      my $v = encode_rfc2047_header(lc($h_entry), $h_line, $eh_charset, length($h_entry)+2);
       $top->head->replace($h_entry, $v);
-
     }
     else {
       # we couldn't find 'header_name: header_value'
