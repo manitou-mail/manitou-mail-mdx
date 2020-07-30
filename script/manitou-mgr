@@ -716,7 +716,7 @@ sub reindex_words {
     {
       use integer;
       my @r=$sth->fetchrow_array;
-      for (my $i=$r[0]/$partsize; $i<$r[1]/$partsize; $i++) {
+      for (my $i=$r[0]/$partsize; $i<=$r[1]/$partsize; $i++) {
 	push @parts, $i;
       }
     }
