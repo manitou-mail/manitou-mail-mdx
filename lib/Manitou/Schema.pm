@@ -358,7 +358,7 @@ CREATE TABLE import_message (
 EOT
 ,"tags_counters" => <<'EOT'
 CREATE TABLE tags_counters (
-  tag_id integer references tags(tag_id) not null,
+  tag_id integer not null references tags(tag_id) on delete cascade,
   cnt integer,
   temp boolean not null
 )
