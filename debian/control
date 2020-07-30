@@ -2,14 +2,14 @@ Source: manitou-mdx
 Section: mail
 Priority: optional
 Maintainer: Daniel Verite <daniel@manitou-mail.org>
-HomePage: http://www.manitou-mail.org
-Build-Depends: libdbd-pg-perl (>= 1.32), libmailtools-perl (>= 1.62), libmime-tools-perl (>= 5.427), libbit-vector-perl (>= 6.4), libhtml-tree-perl (>=3.23), perl (>=5.10)
+HomePage: https://www.manitou-mail.org
+Build-Depends: libdbd-pg-perl (>= 1.32), libmailtools-perl (>= 1.62), libmime-tools-perl (>= 5.427), libbit-vector-perl (>= 6.4), libhtml-tree-perl (>=3.23), libstring-shellquote-perl (>= 1.04), perl (>=5.10)
 
 Package: manitou-mdx
 Architecture: all
 Priority: optional
-HomePage: http://www.manitou-mail.org
-Depends: libdbd-pg-perl (>= 1.32), libmailtools-perl (>= 1.62), libmime-tools-perl (>= 5.427), libbit-vector-perl (>= 6.4), libhtml-tree-perl (>=3.23), perl (>=5.10), adduser
+HomePage: https://www.manitou-mail.org
+Depends: libdbd-pg-perl (>= 1.32), libmailtools-perl (>= 1.62), libmime-tools-perl (>= 5.427), libbit-vector-perl (>= 6.4), libhtml-tree-perl (>=3.23), libstring-shellquote-perl (>= 1.04), perl (>=5.10), adduser
 Description: mail-database exchanger script for the manitou-mail software
  Manitou is a database-driven mail user-agent and associated
  utilities.  It provides a framework and tools for storing and
