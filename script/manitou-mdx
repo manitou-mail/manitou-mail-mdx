@@ -1240,6 +1240,7 @@ sub import_message_2 {
   my %pl_ctxt;
   if (defined($mimeprocess_plugins{$mbox_name})) {
     $pl_ctxt{'filename'}=$mail_filename;
+    $pl_ctxt{'proc_filename'}=$mail_ctxt->{'proc_filename'};
     $pl_ctxt{'stage'}="mimeprocess";
     $pl_ctxt{'mimeobj'}=$top;
     $pl_ctxt{'mail_id'}=$mail_id;
