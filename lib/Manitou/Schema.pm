@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2019 Daniel Verite
+# Copyright (C) 2004-2020 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -30,12 +30,12 @@ require Exporter;
 		partition_words);
 
 sub current_version {
-  return "1.7.1";
+  return "1.7.2";
 }
 
 sub supported_versions {
   return ("0.9.12", "1.0.0", "1.0.1", "1.0.2", "1.1.0", "1.2.0", "1.3.0",
-	  "1.3.1", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.7.1");
+	  "1.3.1", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.7.1", "1.7.2");
 }
 
 my $create_script=<<EOF;
@@ -1241,6 +1241,10 @@ sub upgrade_schema_statements {
     push @stmt, $tables{"thread_action"};
     push @stmt, $indexes{"thread_action_idx1"};
     push @stmt, $indexes{"thread_action_idx2"};
+  }
+  elsif ($from eq "1.7.1" && $to eq "1.7.2") {
+    push @stmt, q{ALTER TABLE tags_counters DROP CONSTRAINT tags_counters_tag_id_fkey,
+		  ADD CONSTRAINT tags_counters_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE};
   }
 
   return @stmt;
