@@ -2180,7 +2180,11 @@ sub get_delivery_agent {
 	return undef;
       }
     }
-    $cmd = "$path -f $shell_quoted_from -t";
+    # sendmail options:
+    # -i: do not stop reading the input if encountering a line with only a dot character.
+    # -f: enveloper sender address
+    # -t: extract recipients from message headers
+    $cmd = "$path -i -f $shell_quoted_from -t";
   }
   else {
     $cmd =~ s/\$FROM\$/$shell_quoted_from/g;
