@@ -1952,6 +1952,7 @@ sub redirect {
     $top->head->replace("Subject", $subject . " (by way of <".$args->{From}.">)");
   }
 
+  local $SIG{'PIPE'} = 'IGNORE';
   my $mfh;
   if (!open($mfh, "|$cmd")) {
     print STDERR "Error while passing redirected mail to the local delivery agent (\`$cmd\`): $!\n";
