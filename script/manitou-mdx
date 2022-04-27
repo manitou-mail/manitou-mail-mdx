@@ -130,8 +130,14 @@ sub update_runtime_timestamp {
 
 sub update_runtime_errcount {
   local $dbh->{AutoCommit}=1;
-  if (!$dbh->do("UPDATE runtime_info SET rt_value=to_char(to_number(rt_value,'9999999999')+1, '9999999999') WHERE rt_key='nb_errors'")) {
+  local $dbh->{RaiseError}=0;
+  # If the value doesn't cast to bigint, this query will fail
+  my $r = $dbh->do("UPDATE runtime_info SET rt_value=cast(rt_value as bigint)+1 WHERE rt_key='nb_errors'");
+  if ($r eq "0E0") {		# no error, but no matching row
     $dbh->do("INSERT INTO runtime_info(rt_key,rt_value) VALUES ('nb_errors','1')");
+  }
+  elsif (!$r) {
+    error_log("Database error while updating \"nb_errors\" in runtime_info: ".$dbh->errstr);
   }
 }
 
