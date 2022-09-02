@@ -64,7 +64,7 @@ my %eval_binary_ops =
 	     "pri" => $PRI_AND},
    "or"  => {"func" => sub { return $_[0] || $_[1]; },
 	     "pri" => $PRI_OR},
-   "contains"  => {"func" => sub { return index($_[0],$_[1])>=0; },
+   "contains"  => {"func" => sub { $_[0] =~ /\Q$_[1]\E/i; },
 	     "pri" => $PRI_CONTAINS},
    # alias for 'contains'
    "contain"  => {"func" => sub { $_[0] =~ /\Q$_[1]\E/i; },
