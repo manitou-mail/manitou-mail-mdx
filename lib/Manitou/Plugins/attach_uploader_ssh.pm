@@ -1,4 +1,4 @@
-# Copyright (C) 2004-2019 Daniel Verite
+# Copyright (C) 2004-2023 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
@@ -115,6 +115,12 @@ sub upload {
   if (!$ftp->put($tmpfh->filename, $fname)) {
     warn "Cannot put file $tmpfh->filename to $fname". $ftp->error;
     $fname=undef;
+  }
+
+  if (defined $sa->{chmod}) {
+    if (!$ftp->chmod($fname, $a->{chmod})) {
+      warn "Cannot assign permissions $a->{chmod} to $fname:" . $ftp->error;
+    }
   }
   unlink($tmpfh->filename);
 
