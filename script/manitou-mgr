@@ -429,9 +429,10 @@ sub child_reindex {
 
 sub get_word_id_from_parent {
   my ($word_utf8, $ctxt) = @_;
-  my $fh=$ctxt->{fh};
-  print $fh "W$word_utf8\n";
-  my $id=<$fh>;
+  my $fh = $ctxt->{fh};
+  my $bytes =   Encode::encode("UTF-8", $word_utf8, Encode::FB_PERLQQ);
+  syswrite $fh, "W$bytes\n";
+  my $id = <$fh>;
   chomp $id;
   $id;
 }
@@ -497,7 +498,7 @@ sub parallel_reindex_parts {
 	next if (!defined $c->{fh});
 	while (1) {
 	  my $buf;
-	  my $n=sysread($c->{fh}, $buf, 50);
+	  my $n=sysread($c->{fh}, $buf, 200);
 	  if (!defined $n) { # no bytes available
 	    last if ($!==POSIX::EWOULDBLOCK);
 	    # Error
@@ -525,6 +526,7 @@ sub parallel_reindex_parts {
 	  if (substr($w, 0,1) eq "W") {
 	    # command Wword: get word_id for 'word'
 	    $w=substr($w,1);
+	    $w = Encode::decode("UTF-8", $w);
 	    #child $c->{part_no} queries for the word '$w'\n";
 	    my $id=$hwords{$w};
 	    if (!defined $id) {
@@ -736,6 +738,8 @@ sub spawn_reindex_job {
     or  die "socketpair: $!";
   $fhc->autoflush(1);
   $fhp->autoflush(1);
+  binmode($fhp, ":raw");
+  binmode($fhc, ":raw");
   my $pid=fork();
   if ($pid>0) {
     close $fhp;
