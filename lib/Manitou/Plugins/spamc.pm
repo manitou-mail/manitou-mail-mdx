@@ -1,7 +1,7 @@
 # Spamassassin plugin for Manitou-Mail to detect spamness of an incoming message
 # by calling 'spamc' (spamassassin's client program)
 
-# Copyright (C) 2010 Daniel Verite
+# Copyright (C) 2004-2023 Daniel Verite
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
 # This program is free software; you can redistribute it and/or modify

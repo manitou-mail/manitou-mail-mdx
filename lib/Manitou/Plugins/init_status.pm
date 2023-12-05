@@ -3,7 +3,7 @@
 # Declare as a plugin in manitou-mdx.conf. Example:
 # incoming_mimeprocess_plugins = init_status({status=>33});
 
-# Copyright (C) 2016 Daniel Verite
+# Copyright (C) 2004-2023 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 

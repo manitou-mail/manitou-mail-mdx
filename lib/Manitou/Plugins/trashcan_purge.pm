@@ -1,5 +1,5 @@
 # Trashcan auto-emptying plugin for manitou-mail
-# Copyright (C) 2009 Daniel Verite
+# Copyright (C) 2004-2023 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 

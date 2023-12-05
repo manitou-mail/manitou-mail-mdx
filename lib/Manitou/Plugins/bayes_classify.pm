@@ -1,5 +1,5 @@
 # Bayesian-based automated classification plugin
-# Copyright (C) 2005 Daniel Vérité
+# Copyright (C) 2004-2023 Daniel Verite
 
    # The implementation of the classification algorithm originally
    # comes from POPFile v0.22 (file: Classifier/Bayes.pm) distributed

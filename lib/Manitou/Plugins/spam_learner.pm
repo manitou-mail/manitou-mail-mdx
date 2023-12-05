@@ -1,6 +1,6 @@
 # Spamassassin feed for training the bayesian filter
 # Plugin for Manitou-Mail
-# Copyright (C) 2010 Daniel Verite
+# Copyright (C) 2004-2023 Daniel Verite
 
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
