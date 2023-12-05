@@ -667,7 +667,7 @@ sub child_reindex_words {
 	$other_words = Manitou::Words::html_to_text(\$html);
       }
       $header = Manitou::Words::header_contents_to_ftidx($header);
-      if (scalar(%extractors)!=0 || ($idx_html && length($html)>0)) {
+      if (scalar(%extractors)!=0 || $idx_html) {
 	Manitou::Attachments::launch_text_extractors($dbh, $mail_id,
 						     \%extractors,
 						     \$other_words);
