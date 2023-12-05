@@ -20,7 +20,7 @@ package Manitou::Encoding;
 
 use strict;
 
-require Encode;
+use Encode;
 use Carp;
 use version;
 use MIME::Words qw(:all);
