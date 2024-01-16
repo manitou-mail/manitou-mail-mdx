@@ -2,7 +2,7 @@
 # Incoming preprocess plugin to discard messages
 # already in the database based on their SHA1 digest
 
-# Copyright (C) 2004-2023 Daniel Verite
+# Copyright (C) 2004-2024 Daniel Verite
 # This file is part of Manitou-Mail (see http://www.manitou-mail.org)
 
 # This program is free software; you can redistribute it and/or modify
