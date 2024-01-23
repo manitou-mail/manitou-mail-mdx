@@ -262,45 +262,48 @@ sub create_database {
   $dbh1->{RaiseError}=0;
   my $dbname = defined $opt_dbname ? $opt_dbname: $default_dbname;
   my $dbuser = defined $opt_dbuser ? $opt_dbuser : $default_dbuser;
-  my $s1 = $dbh1->prepare("SELECT 1 FROM pg_user WHERE usename='$dbuser'");
-  $s1->execute();
+  my $q_dbname = $dbh1->quote_identifier($dbname);
+  my $q_dbuser = $dbh1->quote_identifier($dbuser);
+
+  my $s1 = $dbh1->prepare("SELECT 1 FROM pg_user WHERE usename=?");
+  $s1->execute($dbuser);
   if ($s1->fetchrow_array) {
-    print "The database user $dbuser already exists.\n" unless ($opt_quiet);
+    print "The database user $q_dbuser already exists.\n" unless ($opt_quiet);
   }
   else {
-    $dbh1->do("CREATE USER $dbuser") or die $dbh1->errstr;
-    print "Database user $dbuser created.\n" unless ($opt_quiet);
+    $dbh1->do("CREATE USER $q_dbuser") or die $dbh1->errstr;
+    print "Database user $q_dbuser created.\n" unless ($opt_quiet);
   }
   $s1->finish;
 
-  my $s2 = $dbh1->prepare("SELECT 1 FROM pg_database WHERE datname='$dbname'");
-  $s2->execute();
+  my $s2 = $dbh1->prepare("SELECT 1 FROM pg_database WHERE datname=?");
+  $s2->execute($dbname);
   if ($s2->fetchrow_array) {
-    print STDERR "The database $dbname already exists.\nPlease check and drop the database before attempting to recreate, or choose another database name.\n";
+    print STDERR "The database $q_dbname already exists.\nPlease check and drop the database before attempting to recreate, or choose another database name.\n";
     exit 2;
   }
   $s2->finish;
-  $dbh1->do("CREATE DATABASE $dbname OWNER $dbuser ENCODING 'UTF8'") or die;
-  print "Database $dbname created.\n" unless ($opt_quiet);
+  $dbh1->do("CREATE DATABASE $q_dbname OWNER $q_dbuser ENCODING 'UTF8'") or die;
+  print "Database $q_dbname created.\n" unless ($opt_quiet);
   if ($dbh1->{pg_server_version}/10000 >= 9) {
     # Since Pg 9.0, each large object has it own ACL, except that lo_unlink() is ever
     # only permitted to the object's owner. That's too restrictive for us; it would
     # mean that only the db owner can delete messages, so we stick to pre-9.0 mode.
-    $dbh1->do("ALTER DATABASE $dbname SET lo_compat_privileges TO on") or die $dbh1->errstr;
+    $dbh1->do("ALTER DATABASE $q_dbname SET lo_compat_privileges TO on") or die $dbh1->errstr;
   }
   $dbh1->disconnect;
 
   # Reconnect to the new database as a superuser
-  $dbh1 = DBI->connect("dbi:Pg:$scnx_string dbname=$dbname") or die DBI->errstr;
+  $dbh1 = DBI->connect("dbi:Pg:$scnx_string dbname=$q_dbname") or die DBI->errstr;
   my @lang = $dbh1->selectrow_array("SELECT 1 FROM pg_language WHERE lanname='plpgsql'");
   if (!@lang) {
     $dbh1->do("CREATE LANGUAGE plpgsql") or die $dbh1->errstr;
   }
-  $dbh1->do("SET SESSION AUTHORIZATION $dbuser") or die $dbh1->errstr;
+  $dbh1->do("SET SESSION AUTHORIZATION $q_dbuser") or die $dbh1->errstr;
 
   $dbh=$dbh1;
   create_schema();
-  print "Database $dbname successfully created.\n" unless ($opt_quiet);
+  print "Database $q_dbname successfully created.\n" unless ($opt_quiet);
 }
 
 sub create_schema {
