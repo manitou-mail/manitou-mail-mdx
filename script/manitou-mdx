@@ -65,7 +65,7 @@ use Manitou::Tags qw(consolidate_tags_counts);
 use Manitou::Attachments qw(flatten_and_insert_attach
 			    detach_text_attachments
 			    attach_parts create_html_part has_attachments);
-use Manitou::Encoding qw(encode_dbtxt decode_dbtxt header_decode);
+use Manitou::Encoding qw(encode_dbtxt decode_dbtxt header_decode header_decode_unfold);
 use Manitou::Config qw(getconf getconf_bool add_mbox set_common_conf mailboxes);
 use Manitou::Database qw(db_connect);
 use Manitou::Log qw(notice_log error_log init_log debug_log warning_log);
@@ -1641,9 +1641,9 @@ sub insert_mail {
   my ($rc, $sth);
   my $priority;
 
-  my $from = convnull(header_decode($mailobj->head->get('From')));
-  my $to = convnull(header_decode($mailobj->head->get('To')));
-  my $subject = convnull(header_decode($mailobj->head->get('Subject')));
+  my $from = convnull(header_decode_unfold($mailobj->head->get('From')));
+  my $to = convnull(header_decode_unfold($mailobj->head->get('To')));
+  my $subject = convnull(header_decode_unfold($mailobj->head->get('Subject')));
   my $sender_date = Manitou::MailFormat::reformat_sender_date($mailobj->head->get('Date'));
 
   my $query=q{

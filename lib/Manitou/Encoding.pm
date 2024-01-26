@@ -29,7 +29,7 @@ require Exporter;
 use vars qw(@ISA @EXPORT_OK);
 
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(encode_dbtxt decode_dbtxt header_decode);
+@EXPORT_OK = qw(encode_dbtxt decode_dbtxt header_decode header_decode_unfold);
 
 # Whether utf-8 Perl strings are converted to bytes before being sent
 # to the database
