@@ -652,6 +652,17 @@ DECLARE
       "body", "header", "mail",
       "mail_addresses", "mail_tags",
       "notes", "raw_mail"   }';
+
+ -- the sequences that require USAGE permission to add messages
+ seq_insert text[]:='{
+   seq_addr_id,
+   seq_mail_id,
+   seq_tag_id,
+   seq_thread_id,
+   seq_attachment_id,
+   jobs_queue_job_id_seq }';
+
+
 BEGIN
   IF ability = 'read' THEN
     -- permissions for "reader" ability
@@ -697,9 +708,18 @@ BEGIN
       ) AS tbl(pt,t,n);
 
   ELSIF ability = 'compose' THEN
-    objname := 'mail';
-    objtype := 'table';
-    privtype := 'insert';
+    FOR objname, objtype, privtype IN
+     (SELECT a.objname, 'table', 'insert'
+       FROM unnest(tbl_upd) as a(objname))
+    LOOP
+       RETURN NEXT;
+    END LOOP;
+    FOR objname, objtype, privtype IN
+     (SELECT a.objname, 'sequence', 'usage'
+       FROM unnest(seq_insert) as a(objname))
+    LOOP
+       RETURN NEXT;
+    END LOOP;
     RETURN NEXT;
 
   ELSIF ability = 'admin-level1' THEN
