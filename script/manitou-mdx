@@ -1972,7 +1972,7 @@ sub redirect {
 }
 
 sub send_one_mail {
-  my ($from, $subject, $mail_id, $job_id) = @_;
+  my ($from, $mail_id, $job_id) = @_;
   # job_id is set for scheduled messages
   # the job entry is deleted as soon as the message is sent.
   my $decl_charset = getconf("preferred_charset", $from) || 'iso-8859-1';
@@ -1994,7 +1994,8 @@ sub send_one_mail {
   my $top;
   my $text_part;
   my $html_part;
-  my %mime_args = (From => $from, Encoding => '-SUGGEST', Subject => $subject,
+  my %mime_args = (From => $from,
+		   Encoding => '-SUGGEST',
 		   'X-Mailer' => undef);
   if (!defined $html_body) {
     $mime_args{Charset} = $body_charset;
@@ -2210,10 +2211,10 @@ sub send_mails {
   while (@res = $sth1->fetchrow_array) {
     my $mail_id=$res[0];
     next if (exists $hsend_blocked{$mail_id});
-    my $sth = $dbh->prepare("SELECT sender,subject,status FROM mail WHERE mail_id=?");
+    my $sth = $dbh->prepare("SELECT sender,status FROM mail WHERE mail_id=?");
     $sth->execute($mail_id);
     my @row;
-    while (my ($sender,$subject,$status) = $sth->fetchrow_array) {
+    while (my ($sender, $status) = $sth->fetchrow_array) {
       my $job_id;
       my $sched_time;  # timestamp as seconds since epoch
       if ($status == 129+$sched_bit) {
@@ -2230,7 +2231,7 @@ sub send_mails {
 	# were sent in the loop), ignore the message.
 	next;
       }
-      if (send_one_mail($sender, $subject, $mail_id, $job_id)) {
+      if (send_one_mail($sender, $mail_id, $job_id)) {
 	update_runtime_timestamp("last_sent") if getconf_bool("update_runtime_info", $row[0]);
 	notice_log("Sent outgoing message #$mail_id");
 	my $nb_blocked = scalar (keys %hsend_blocked);
