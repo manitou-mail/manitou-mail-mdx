@@ -1540,23 +1540,15 @@ sub insert_addresses {
   my $sth = $dbh->prepare("SELECT addr_id,recv_pri FROM addresses WHERE email_addr=?")
       or die $dbh->errstr;
 
-  my $ins_query;
-
-  if ($dbh->{pg_server_version} < 90500) {
-    # use plpgsql function for potentially concurrent inserts
-    $ins_query = "select pg_temp.insert_address(?,?)";
-  }
-  else {
-    # use the ON CONFLICT mechanism of PG 9.5+ to handle the case of an address
-    # inserted but not yet committed by another transaction
-    $ins_query = qq{
-	INSERT INTO addresses(addr_id,email_addr,name)
-	VALUES(nextval('seq_addr_id'), ?, ?)
-	ON CONFLICT (email_addr)
-	  DO NOTHING
-	RETURNING addr_id
-    };
-  }
+  # use the ON CONFLICT clause to handle the case of an address
+  # inserted but not yet committed by another transaction
+  my $ins_query = qq{
+      INSERT INTO addresses(addr_id,email_addr,name)
+      VALUES(nextval('seq_addr_id'), ?, ?)
+      ON CONFLICT (email_addr)
+	DO NOTHING
+      RETURNING addr_id
+  };
 
   my $sth_insert_ad = $dbh->prepare($ins_query);
 
@@ -1567,7 +1559,6 @@ sub insert_addresses {
     eval {
       no warnings 'all';
       @addrs = Manitou::MailFormat::parse_addresses(header_decode($mail->head->get($addrtype)));
-      # @addrs=Mail::Address->parse(header_decode($mail->head->get($addrtype)));
     };
 
     for my $a (@addrs) {
