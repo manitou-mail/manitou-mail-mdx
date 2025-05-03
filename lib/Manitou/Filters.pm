@@ -433,6 +433,7 @@ sub eval_subexpr {
     my %subctxt;
     $subctxt{mime_obj}=$ctxt->{mime_obj};
     $subctxt{evp}=0;
+    @{$subctxt{evstack}} = ();
     $subctxt{cache} = $ctxt->{cache};
     $subctxt{expr}=$evstr;
     $subctxt{len}=length($evstr);
