@@ -1,6 +1,6 @@
 # Copyright (C) 2004-2025 Daniel Verite
 
-# This file is part of Manitou-Mail (see http://www.manitou-mail.org)
+# This file is part of Manitou-Mail (see https://www.manitou-mail.org)
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
