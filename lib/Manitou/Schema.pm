@@ -257,8 +257,8 @@ CREATE TABLE raw_mail (
 CREATE UNIQUE INDEX idx_raw_mail ON raw_mail(mail_id);
 
 CREATE TABLE inverted_word_index (
-  word_id int REFERENCES words(word_id),
-  part_no int,
+  word_id int REFERENCES words(word_id) NOT NULL,
+  part_no int NOT NULL,
   mailvec bytea,
   nz_offset int default 0
 );
@@ -1266,6 +1266,9 @@ sub upgrade_schema_statements {
   elsif ($from eq "1.7.1" && $to eq "1.7.2") {
     push @stmt, q{ALTER TABLE tags_counters DROP CONSTRAINT tags_counters_tag_id_fkey,
 		  ADD CONSTRAINT tags_counters_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE};
+  }
+  elsif ($from eq "1.7.3" && $to eq "1.7.4") {
+    push @stmt, "ALTER TABLE inverted_word_index ALTER COLUMN word_id SET NOT NULL, ALTER COLUMN part_no SET NOT NULL";
   }
 
   return @stmt;
