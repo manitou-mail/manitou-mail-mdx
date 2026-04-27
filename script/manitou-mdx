@@ -331,7 +331,7 @@ sub import_mailfiles {
 	    warning_log("Execution of postprocess_mailfile_cmd failed (\`$cmd\`, exit code=".($?>>8).")");
 	  }
 	}
-	if ($origin->{type} eq "maildir") {
+	if ($ret!=0 && $origin->{type} eq "maildir") {
 	  if (!unlink($proc_filename)) {
 	    error_log("Failed to delete file $proc_filename: $!");
 	  }
